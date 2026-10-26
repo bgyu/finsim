@@ -1,0 +1,10 @@
+.runtime/
+.agents/
+.aws/
+.codex/
+artifacts/
+bin/
+obj/
+TestResults/
+*.user
+*.suo
