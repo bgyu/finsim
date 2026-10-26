@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="../FinSim.Contracts/FinSim.Contracts.csproj" />
+  </ItemGroup>
+</Project>

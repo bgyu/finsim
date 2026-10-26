@@ -86,3 +86,57 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=12 \
     CMD ["/usr/local/sbin/cluster-healthcheck"]
 
 ENTRYPOINT ["/usr/local/sbin/cluster-entrypoint"]
+
+
+# Build managed artifacts on the same UBI/EL10 ABI as the runtime image. This
+# stage is disposable: neither the SDK nor the source tree is copied into the
+# production application target.
+FROM slurm-runtime AS dotnet-build
+
+RUN dnf -y install dotnet-sdk-10.0 && \
+    dnf clean all && \
+    rm -rf -- /var/cache/dnf
+
+WORKDIR /src
+COPY global.json Directory.Build.props NuGet.Config FinSim.slnx ./
+COPY src ./src
+COPY tests ./tests
+
+RUN dotnet restore FinSim.slnx --configfile NuGet.Config && \
+    dotnet build FinSim.slnx --configuration Release --no-restore && \
+    dotnet run --project tests/FinSim.Tests/FinSim.Tests.csproj \
+        --configuration Release --no-build && \
+    dotnet publish src/FinSim/FinSim.csproj --configuration Release \
+        --no-restore --output /publish/FinSim && \
+    dotnet publish src/FinSimProxy/FinSimProxy.csproj --configuration Release \
+        --no-restore --output /publish/FinSimProxy && \
+    dotnet publish src/FinSimCache/FinSimCache.csproj --configuration Release \
+        --no-restore --output /publish/FinSimCache
+
+
+FROM slurm-runtime AS finsim-app
+
+LABEL org.opencontainers.image.title="FinSim Slurm application runtime"
+
+COPY --from=dotnet-build --chown=root:root /publish /opt/finsim
+RUN find /opt/finsim -type d -exec chmod 0755 {} + && \
+    find /opt/finsim -type f -exec chmod 0644 {} + && \
+    chmod 0755 /opt/finsim/FinSim/FinSim \
+        /opt/finsim/FinSimProxy/FinSimProxy \
+        /opt/finsim/FinSimCache/FinSimCache
+
+
+# Developer and TeamCity image. It intentionally contains source, the SDK,
+# tests, Compose inputs and diagnostics, but it is never promoted as a
+# production runtime artifact.
+FROM slurm-runtime AS finsim-dev
+
+RUN dnf -y install dotnet-sdk-10.0 git jq findutils && \
+    dnf clean all && \
+    rm -rf -- /var/cache/dnf
+
+WORKDIR /workspace/finsim
+COPY . .
+
+ENTRYPOINT []
+CMD ["/bin/bash"]

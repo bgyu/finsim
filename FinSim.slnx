@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="src/FinSim.Contracts/FinSim.Contracts.csproj" />
+  <Project Path="src/FinSim.Infrastructure/FinSim.Infrastructure.csproj" />
+  <Project Path="src/FinSim/FinSim.csproj" />
+  <Project Path="src/FinSimProxy/FinSimProxy.csproj" />
+  <Project Path="src/FinSimCache/FinSimCache.csproj" />
+  <Project Path="tests/FinSim.Tests/FinSim.Tests.csproj" />
+</Solution>

@@ -1,0 +1,9 @@
+.git
+.runtime
+.agents
+.aws
+.codex
+artifacts
+**/bin
+**/obj
+TestResults

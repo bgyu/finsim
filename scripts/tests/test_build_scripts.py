@@ -134,7 +134,10 @@ class BuildScriptTests(unittest.TestCase):
             "/opt/slurm-source/scripts/configure-runtime.sh",
         ):
             self.assertIn(command, dockerfile)
-        self.assertNotIn("RUN dnf ", dockerfile)
+        # Slurm dependency installation remains reusable outside a container.
+        # Disposable .NET build/development stages may install their SDK tools
+        # directly because those packages are not part of Slurm RPM assembly.
+        self.assertIn("aspnetcore-runtime-10.0", (ROOT / "scripts" / "install-runtime.sh").read_text())
         self.assertNotIn("useradd --system", dockerfile)
         self.assertNotIn("rpmbuild -", dockerfile)
 
