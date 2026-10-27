@@ -41,3 +41,16 @@ public sealed record WorkflowStatusResponse(
     string? MasterJobId,
     string? WorkerJobId,
     string? Error);
+
+public sealed record SubmissionIntent(
+    Guid WorkflowId,
+    string Role,
+    string Marker);
+
+public sealed record SubmissionRecord(
+    Guid WorkflowId,
+    string Role,
+    string Marker,
+    string JobId);
+
+public sealed record WorkflowOwner(Guid WorkflowId, string SubjectSha256);
