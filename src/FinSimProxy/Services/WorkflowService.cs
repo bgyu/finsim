@@ -18,6 +18,7 @@ public sealed partial class WorkflowService
     private readonly SlurmRestClient slurm;
     private readonly Uri cacheUrl;
     private readonly string cacheTokenFile;
+    private readonly bool allowInsecureCache;
     private readonly Uri slurmUrl;
     private readonly string slurmTokenFile;
     private readonly string dataRoot;
@@ -30,10 +31,11 @@ public sealed partial class WorkflowService
     {
         this.cache = cache;
         this.slurm = slurm;
+        allowInsecureCache = configuration.GetValue("Cache:AllowInsecureHttp", false);
         cacheUrl = RequiredUri(
             configuration,
             "Cache:BaseUrl",
-            configuration.GetValue("Cache:AllowInsecureHttp", false));
+            allowInsecureCache);
         cacheTokenFile = Required(configuration, "Cache:TokenFile");
         allowInsecureSlurm = configuration.GetValue("Slurm:AllowInsecureHttp", false);
         slurmUrl = RequiredUri(configuration, "Slurm:BaseUrl", allowInsecureSlurm);
@@ -139,15 +141,15 @@ public sealed partial class WorkflowService
             return new WorkflowStatusResponse(workflowId, "NOT_FOUND", null, null, null);
         }
 
-        var report = ReportPath(workflowId);
-        if (IsPrivateRegularFile(report, maximumBytes: 1_048_576))
+        var report = await ReadReportFileAsync(workflowId, cancellationToken);
+        if (report is not null)
         {
             return new WorkflowStatusResponse(
                 workflowId,
-                "SUCCEEDED",
+                report.Status,
                 (await ReadRecordAsync(CacheKeys.MasterJob(workflowId), cancellationToken))?.JobId,
                 (await ReadRecordAsync(CacheKeys.WorkerJob(workflowId), cancellationToken))?.JobId,
-                null);
+                report.Error);
         }
 
         var marker = Marker(workflowId, "master");
@@ -216,13 +218,8 @@ public sealed partial class WorkflowService
             return null;
         }
 
-        var path = ReportPath(workflowId);
-        if (!IsPrivateRegularFile(path, maximumBytes: 1_048_576))
-        {
-            return null;
-        }
-
-        return await File.ReadAllTextAsync(path, cancellationToken);
+        var report = await ReadReportFileAsync(workflowId, cancellationToken);
+        return report is null ? null : JsonSerializer.Serialize(report);
     }
 
     public bool IsReady()
@@ -251,10 +248,12 @@ public sealed partial class WorkflowService
             ["FINSIM_WORKFLOW_ID"] = workflowId.ToString("D"),
             ["FINSIM_CACHE_URL"] = cacheUrl.ToString(),
             ["FINSIM_CACHE_TOKEN_FILE"] = cacheTokenFile,
+            ["FINSIM_CACHE_ALLOW_INSECURE_HTTP"] = allowInsecureCache ? "1" : "0",
             ["FINSIM_SLURM_REST_URL"] = slurmUrl.ToString(),
             ["FINSIM_SLURM_TOKEN_FILE"] = slurmTokenFile,
             ["FINSIM_SLURM_ALLOW_INSECURE_HTTP"] = allowInsecureSlurm ? "1" : "0",
             ["FINSIM_DATA_ROOT"] = dataRoot,
+            ["FINSIM_DEADLINE_SECONDS"] = "600",
             ["FINSIM_MAX_PARALLEL"] = request.MaxParallel.ToString(
                 System.Globalization.CultureInfo.InvariantCulture)
         };
@@ -354,14 +353,46 @@ public sealed partial class WorkflowService
     private string ReportPath(Guid workflowId) =>
         Path.Combine(dataRoot, "reports", $"{workflowId:D}.json");
 
+    private async Task<SimulationReport?> ReadReportFileAsync(
+        Guid workflowId,
+        CancellationToken cancellationToken)
+    {
+        var path = ReportPath(workflowId);
+        if (!IsPrivateRegularFile(path, maximumBytes: 1_048_576))
+        {
+            return null;
+        }
+
+        await using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            16 * 1024,
+            FileOptions.Asynchronous | FileOptions.SequentialScan);
+        var report = await JsonSerializer.DeserializeAsync<SimulationReport>(
+            stream,
+            cancellationToken: cancellationToken);
+        return report?.WorkflowId == workflowId &&
+               report.Status is "SUCCEEDED" or "FAILED"
+            ? report
+            : throw new InvalidDataException("Final report content is invalid.");
+    }
+
     private static bool IsPrivateRegularFile(string path, long maximumBytes)
     {
         var info = new FileInfo(path);
-        return info.Exists &&
-               info.LinkTarget is null &&
-               (info.Attributes & FileAttributes.Directory) == 0 &&
-               info.Length is > 0 and <= 1_048_576 &&
-               info.Length <= maximumBytes;
+        if (!info.Exists || info.LinkTarget is not null ||
+            (info.Attributes & FileAttributes.Directory) != 0 ||
+            info.Length is <= 0 or > 1_048_576 || info.Length > maximumBytes)
+        {
+            return false;
+        }
+
+        return !OperatingSystem.IsLinux() ||
+               (File.GetUnixFileMode(path) &
+                (UnixFileMode.GroupRead | UnixFileMode.GroupWrite |
+                 UnixFileMode.OtherRead | UnixFileMode.OtherWrite)) == 0;
     }
 
     private static string MapState(string state)

@@ -3,6 +3,7 @@ using FinSim.Infrastructure.Cache;
 using FinSim.Infrastructure.Security;
 using FinSim.Infrastructure.Slurm;
 using FinSimProxy.Services;
+using FinSimApp.Batch;
 using Microsoft.Extensions.Configuration;
 using System.Net;
 using System.Text.Json;
@@ -139,6 +140,97 @@ try
     {
         Check(true, "changed idempotent request is rejected");
     }
+
+    var workerWorkflow = Guid.NewGuid();
+    var workerChunk = new ChunkData(workerWorkflow, 0, [4, 7, -2]);
+    await store.PutIfAbsentAsync(
+        CacheKeys.Chunk(workerWorkflow, 0),
+        JsonSerializer.SerializeToElement(workerChunk));
+    var workerSettings = new BatchSettings(
+        workerWorkflow,
+        new Uri("https://cache.test/"),
+        tokenFile,
+        false,
+        Path.Combine(temporaryRoot, "worker-data"),
+        null,
+        null,
+        false,
+        30);
+    var workerExit = await new BatchRunner(workerSettings, store)
+        .RunWorkerAsync(0, CancellationToken.None);
+    var workerResult = (await store.GetAsync(CacheKeys.Result(workerWorkflow, 0)))?
+        .Deserialize<ChunkResult>();
+    Check(workerExit == 0, "worker exits successfully");
+    Check(
+        workerResult is { Count: 3, Sum: 9, Minimum: -2, Maximum: 7 },
+        "worker calculates deterministic aggregate");
+
+    var masterWorkflow = Guid.NewGuid();
+    var masterInput = new SimulationRequest([1, 2, 3, 4], ChunkSize: 2, MaxParallel: 2);
+    await store.PutIfAbsentAsync(
+        CacheKeys.Input(masterWorkflow),
+        JsonSerializer.SerializeToElement(masterInput));
+    var resultsPublished = false;
+    var masterHandler = new RecordingHandler(request =>
+    {
+        if (request.Method == HttpMethod.Post)
+        {
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"job_id\":91}")
+            };
+        }
+
+        if (!resultsPublished)
+        {
+            for (var index = 0; index < 2; index++)
+            {
+                var chunkValue = store.GetAsync(CacheKeys.Chunk(masterWorkflow, index))
+                    .GetAwaiter().GetResult();
+                var chunk = chunkValue?.Deserialize<ChunkData>() ??
+                    throw new InvalidOperationException("test chunk missing");
+                store.PutIfAbsentAsync(
+                        CacheKeys.Result(masterWorkflow, index),
+                        JsonSerializer.SerializeToElement(ChunkCalculator.Calculate(chunk)))
+                    .GetAwaiter().GetResult();
+            }
+
+            resultsPublished = true;
+        }
+
+        return new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                "{\"jobs\":[{\"job_id\":91,\"job_state\":[\"COMPLETED\"]}]}")
+        };
+    });
+    var masterSettings = new BatchSettings(
+        masterWorkflow,
+        new Uri("https://cache.test/"),
+        tokenFile,
+        false,
+        Path.Combine(temporaryRoot, "master-data"),
+        new Uri("https://slurm.test/"),
+        tokenFile,
+        false,
+        30);
+    var masterSlurm = new SlurmRestClient(
+        new HttpClient(masterHandler),
+        masterSettings.SlurmUrl!,
+        tokenFile,
+        "finsim");
+    var masterExit = await new BatchRunner(masterSettings, store, masterSlurm)
+        .RunMasterAsync(CancellationToken.None);
+    var reportPath = Path.Combine(
+        masterSettings.DataRoot,
+        "reports",
+        $"{masterWorkflow:D}.json");
+    var report = JsonSerializer.Deserialize<SimulationReport>(
+        await File.ReadAllTextAsync(reportPath));
+    Check(masterExit == 0, "master exits successfully");
+    Check(
+        report is { Status: "SUCCEEDED", ValueCount: 4, Sum: 10, Minimum: 1, Maximum: 4 },
+        "master aggregates worker results and writes report");
 
     var failureClient = new SlurmRestClient(
         new HttpClient(new RecordingHandler(_ => throw new HttpRequestException("lost"))),

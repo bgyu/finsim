@@ -12,8 +12,11 @@ namespace FinSim.Infrastructure.Cache;
 public sealed class HttpKeyValueStore(
     HttpClient httpClient,
     Uri baseUri,
-    string tokenFile) : IKeyValueStore
+    string tokenFile,
+    bool allowInsecureHttp = false) : IKeyValueStore
 {
+    private readonly Uri validatedBaseUri = ValidateBaseUri(baseUri, allowInsecureHttp);
+
     public async Task<PutResult> PutIfAbsentAsync(
         string key,
         JsonElement value,
@@ -89,7 +92,9 @@ public sealed class HttpKeyValueStore(
     private HttpRequestMessage NewRequest(HttpMethod method, string key)
     {
         var escaped = string.Join('/', key.Split('/').Select(Uri.EscapeDataString));
-        var request = new HttpRequestMessage(method, new Uri(baseUri, $"v1/kv/{escaped}"));
+        var request = new HttpRequestMessage(
+            method,
+            new Uri(validatedBaseUri, $"v1/kv/{escaped}"));
         request.Headers.Authorization = new AuthenticationHeaderValue(
             "Bearer",
             PrivateTokenFile.Read(tokenFile));
@@ -103,6 +108,18 @@ public sealed class HttpKeyValueStore(
         {
             throw new ArgumentException("Cache key is invalid.", nameof(key));
         }
+    }
+
+    private static Uri ValidateBaseUri(Uri uri, bool allowInsecureHttp)
+    {
+        if (!uri.IsAbsoluteUri ||
+            (uri.Scheme != Uri.UriSchemeHttps &&
+             !(allowInsecureHttp && uri.Scheme == Uri.UriSchemeHttp)))
+        {
+            throw new ArgumentException("Cache URL must use HTTPS.", nameof(uri));
+        }
+
+        return uri;
     }
 
     private static async Task<byte[]> ReadBoundedAsync(

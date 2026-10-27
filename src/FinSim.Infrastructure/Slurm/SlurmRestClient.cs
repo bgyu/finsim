@@ -104,8 +104,8 @@ public sealed class SlurmRestClient
                 continue;
             }
 
-            var id = ReadString(job, "job_id");
-            var state = ReadString(job, "job_state") ?? ReadString(job, "state");
+            var id = ReadString(job, "array_job_id") ?? ReadString(job, "job_id");
+            var state = ReadState(job);
             if (id is not null && state is not null)
             {
                 matches.Add(new SlurmJobSnapshot(id, state, jobComment));
@@ -159,6 +159,42 @@ public sealed class SlurmRestClient
         {
             throw new SlurmAmbiguousException("Slurm cancellation transport failed.", error);
         }
+    }
+
+    public async Task<IReadOnlyList<SlurmJobSnapshot>> GetJobAsync(
+        string jobId,
+        string correlationId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!System.Text.RegularExpressions.Regex.IsMatch(jobId, "^[0-9]+$"))
+        {
+            throw new ArgumentException("Slurm job ID is invalid.", nameof(jobId));
+        }
+
+        using var request = NewRequest(
+            HttpMethod.Get,
+            $"{ApiPrefix}/job/{Uri.EscapeDataString(jobId)}",
+            correlationId);
+        using var response = await SendAsync(request, mutation: false, cancellationToken);
+        using var payload = await ReadJsonAsync(response, cancellationToken);
+        if (!payload.RootElement.TryGetProperty("jobs", out var jobs) ||
+            jobs.ValueKind != JsonValueKind.Array)
+        {
+            throw new SlurmUnavailableException("Slurm job response is invalid.");
+        }
+
+        var result = new List<SlurmJobSnapshot>();
+        foreach (var job in jobs.EnumerateArray())
+        {
+            var id = ReadString(job, "job_id");
+            var state = ReadState(job);
+            if (id is not null && state is not null)
+            {
+                result.Add(new SlurmJobSnapshot(id, state, ReadString(job, "comment")));
+            }
+        }
+
+        return result;
     }
 
     private HttpRequestMessage NewRequest(HttpMethod method, string path, string correlationId)
@@ -297,5 +333,31 @@ public sealed class SlurmRestClient
             JsonValueKind.Number => value.GetRawText(),
             _ => null
         };
+    }
+
+    private static string? ReadState(JsonElement job)
+    {
+        if (!job.TryGetProperty("job_state", out var value) &&
+            !job.TryGetProperty("state", out value))
+        {
+            return null;
+        }
+
+        if (value.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in value.EnumerateArray())
+            {
+                if (item.ValueKind == JsonValueKind.String)
+                {
+                    return item.GetString();
+                }
+            }
+
+            return null;
+        }
+
+        var wrapper = JsonSerializer.SerializeToElement(
+            new Dictionary<string, JsonElement> { ["state"] = value });
+        return ReadString(wrapper, "state");
     }
 }

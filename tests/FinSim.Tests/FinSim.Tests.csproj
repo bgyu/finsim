@@ -5,6 +5,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/FinSim.Contracts/FinSim.Contracts.csproj" />
     <ProjectReference Include="../../src/FinSim.Infrastructure/FinSim.Infrastructure.csproj" />
+    <ProjectReference Include="../../src/FinSim/FinSim.csproj" />
     <ProjectReference Include="../../src/FinSimProxy/FinSimProxy.csproj" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>

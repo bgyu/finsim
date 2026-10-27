@@ -17,13 +17,12 @@ builder.Services.AddHttpClient("slurm", client => client.Timeout = TimeSpan.From
 builder.Services.AddSingleton<IKeyValueStore>(services =>
 {
     var configuration = services.GetRequiredService<IConfiguration>();
+    var allowHttp = configuration.GetValue("Cache:AllowInsecureHttp", false);
     return new HttpKeyValueStore(
         services.GetRequiredService<IHttpClientFactory>().CreateClient("cache"),
-        RequiredUri(
-            configuration,
-            "Cache:BaseUrl",
-            configuration.GetValue("Cache:AllowInsecureHttp", false)),
-        Required(configuration, "Cache:TokenFile"));
+        RequiredUri(configuration, "Cache:BaseUrl", allowHttp),
+        Required(configuration, "Cache:TokenFile"),
+        allowHttp);
 });
 builder.Services.AddSingleton(services =>
 {
