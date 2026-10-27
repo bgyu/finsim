@@ -8,5 +8,6 @@
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
     <InvariantGlobalization>false</InvariantGlobalization>
     <ServerGarbageCollection>true</ServerGarbageCollection>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 </Project>

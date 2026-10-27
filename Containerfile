@@ -102,7 +102,7 @@ COPY global.json Directory.Build.props NuGet.Config FinSim.slnx ./
 COPY src ./src
 COPY tests ./tests
 
-RUN dotnet restore FinSim.slnx --configfile NuGet.Config && \
+RUN dotnet restore FinSim.slnx --configfile NuGet.Config --locked-mode && \
     dotnet build FinSim.slnx --configuration Release --no-restore && \
     dotnet run --project tests/FinSim.Tests/FinSim.Tests.csproj \
         --configuration Release --no-build && \
