@@ -670,6 +670,11 @@ run_controller() {
 
     install -d -o slurm -g slurm -m 0700 /var/spool/slurmctld
     install -d -o slurm -g slurm -m 0750 /var/log/slurm
+    # A named volume hides image-layer ownership at this mount point on some
+    # Compose providers. The controller's root staging process establishes the
+    # shared application directories before any non-root FinSim process starts.
+    install -d -o finsim -g finsim -m 0700 \
+        /finsim-data /finsim-data/logs /finsim-data/reports
     log 'starting slurmctld as uid 64030 (slurm)'
     runuser --user slurm -- slurmctld -D -v -f "$SLURM_CONF" &
     child_pids+=("$!")

@@ -59,8 +59,13 @@ public sealed class SlurmRestClient
                 correlationId);
             request.Content = new StringContent(
                 requestBody.ToJsonString(),
-                Encoding.UTF8,
-                "application/json");
+                Encoding.UTF8);
+            // Slurm's MIME plugin matches the registered media type strictly.
+            // StringContent(mediaType) appends "charset=utf-8", which Slurm
+            // 26.05 rejects as an unknown MIME type even though the body is
+            // valid UTF-8 JSON.
+            request.Content.Headers.ContentType =
+                new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
             using var response = await SendAsync(request, mutation: true, cancellationToken);
             using var payload = await ReadJsonAsync(response, cancellationToken);
             return ReadJobId(payload.RootElement) ??

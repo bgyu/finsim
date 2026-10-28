@@ -10,7 +10,7 @@ source "$script_dir/lib/build-common.sh"
 
 versions_file="$project_dir/build/versions.conf"
 package_dir=/var/packages
-integration_database=1
+integration_database=0
 
 usage() {
     cat <<'EOF'
@@ -21,8 +21,8 @@ Verify and install the required MUNGE and Slurm runtime RPMs.
 Options:
   --versions-file FILE              Repository trust/digest defaults
   --packages-dir DIRECTORY          Artifact directory (default: /var/packages)
-  --with-integration-database       Install MariaDB server (default)
-  --without-integration-database    Omit the local-only database server
+  --with-integration-database       Install the local-only MariaDB server
+  --without-integration-database    Omit MariaDB (default, production-safe)
   -h, --help                        Show this help
 EOF
 }

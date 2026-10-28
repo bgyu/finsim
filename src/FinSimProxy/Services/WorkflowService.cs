@@ -18,9 +18,14 @@ public sealed partial class WorkflowService
     private readonly SlurmRestClient slurm;
     private readonly Uri cacheUrl;
     private readonly string cacheTokenFile;
+    private readonly string jobCacheTokenFile;
     private readonly bool allowInsecureCache;
     private readonly Uri slurmUrl;
     private readonly string slurmTokenFile;
+    private readonly string masterPartition;
+    private readonly string masterFeature;
+    private readonly string workerPartition;
+    private readonly string workerFeature;
     private readonly string dataRoot;
     private readonly bool allowInsecureSlurm;
 
@@ -37,9 +42,14 @@ public sealed partial class WorkflowService
             "Cache:BaseUrl",
             allowInsecureCache);
         cacheTokenFile = Required(configuration, "Cache:TokenFile");
+        jobCacheTokenFile = configuration["Cache:JobTokenFile"] ?? cacheTokenFile;
         allowInsecureSlurm = configuration.GetValue("Slurm:AllowInsecureHttp", false);
         slurmUrl = RequiredUri(configuration, "Slurm:BaseUrl", allowInsecureSlurm);
         slurmTokenFile = Required(configuration, "Slurm:TokenFile");
+        masterPartition = SchedulerName(configuration["Slurm:MasterPartition"] ?? "debug");
+        masterFeature = SchedulerName(configuration["Slurm:MasterFeature"] ?? "finsim-master");
+        workerPartition = SchedulerName(configuration["Slurm:WorkerPartition"] ?? "debug");
+        workerFeature = SchedulerName(configuration["Slurm:WorkerFeature"] ?? "finsim-worker");
         dataRoot = Path.GetFullPath(configuration["Paths:DataRoot"] ?? "/finsim-data");
     }
 
@@ -247,7 +257,7 @@ public sealed partial class WorkflowService
             ["PATH"] = "/usr/local/bin:/usr/bin:/bin",
             ["FINSIM_WORKFLOW_ID"] = workflowId.ToString("D"),
             ["FINSIM_CACHE_URL"] = cacheUrl.ToString(),
-            ["FINSIM_CACHE_TOKEN_FILE"] = cacheTokenFile,
+            ["FINSIM_CACHE_TOKEN_FILE"] = jobCacheTokenFile,
             ["FINSIM_CACHE_ALLOW_INSECURE_HTTP"] = allowInsecureCache ? "1" : "0",
             ["FINSIM_SLURM_REST_URL"] = slurmUrl.ToString(),
             ["FINSIM_SLURM_TOKEN_FILE"] = slurmTokenFile,
@@ -255,7 +265,9 @@ public sealed partial class WorkflowService
             ["FINSIM_DATA_ROOT"] = dataRoot,
             ["FINSIM_DEADLINE_SECONDS"] = "600",
             ["FINSIM_MAX_PARALLEL"] = request.MaxParallel.ToString(
-                System.Globalization.CultureInfo.InvariantCulture)
+                System.Globalization.CultureInfo.InvariantCulture),
+            ["FINSIM_WORKER_PARTITION"] = workerPartition,
+            ["FINSIM_WORKER_FEATURE"] = workerFeature
         };
         var environmentArray = new JsonArray(
             environment.Select(pair => JsonValue.Create($"{pair.Key}={pair.Value}")).ToArray());
@@ -267,7 +279,8 @@ public sealed partial class WorkflowService
             {
                 ["name"] = name,
                 ["comment"] = marker,
-                ["partition"] = "debug",
+                ["partition"] = masterPartition,
+                ["constraints"] = masterFeature,
                 ["time_limit"] = 10,
                 ["cpus_per_task"] = 1,
                 ["memory_per_node"] = 256,
@@ -461,6 +474,11 @@ public sealed partial class WorkflowService
         string.IsNullOrWhiteSpace(configuration[key])
             ? throw new InvalidOperationException($"Configuration {key} is required.")
             : configuration[key]!;
+
+    private static string SchedulerName(string value) =>
+        Regex.IsMatch(value, "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+            ? value
+            : throw new InvalidOperationException("Slurm partition or feature name is invalid.");
 
     private static Uri RequiredUri(IConfiguration configuration, string key, bool allowHttp)
     {

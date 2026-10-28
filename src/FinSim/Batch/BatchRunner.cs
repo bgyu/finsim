@@ -199,7 +199,8 @@ public sealed class BatchRunner(
             {
                 ["name"] = $"finsim-{settings.WorkflowId:N}"[..19] + "-w",
                 ["comment"] = marker,
-                ["partition"] = "debug",
+                ["partition"] = settings.WorkerPartition,
+                ["constraints"] = settings.WorkerFeature,
                 ["array"] = $"0-{chunkCount - 1}%{maxParallel}",
                 ["time_limit"] = 5,
                 ["cpus_per_task"] = 1,

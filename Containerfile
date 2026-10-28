@@ -57,13 +57,14 @@ COPY build/versions.conf /opt/slurm-source/build/versions.conf
 COPY scripts/lib/build-common.sh /opt/slurm-source/scripts/lib/build-common.sh
 COPY scripts/install-runtime.sh /opt/slurm-source/scripts/install-runtime.sh
 
-# Verification occurs before DNF sees a local RPM. MariaDB remains an explicit
-# integration-image option; production slurmdbd uses an external HA database.
+# Verification occurs before DNF sees a local RPM.  The production base omits
+# the database server because production slurmdbd connects to an external HA
+# database; the local-only finsim-sim target adds MariaDB later.
 RUN chmod 0755 /opt/slurm-source/scripts/install-runtime.sh && \
     /opt/slurm-source/scripts/install-runtime.sh \
         --versions-file /opt/slurm-source/build/versions.conf \
         --packages-dir /var/packages \
-        --with-integration-database
+        --without-integration-database
 
 COPY scripts/configure-runtime.sh /opt/slurm-source/scripts/configure-runtime.sh
 COPY config /opt/slurm-source/config
@@ -77,7 +78,7 @@ COPY deploy/lifecycle /opt/slurm-source/deploy/lifecycle
 RUN chmod 0755 /opt/slurm-source/scripts/configure-runtime.sh && \
     /opt/slurm-source/scripts/configure-runtime.sh \
         --source-root /opt/slurm-source \
-        --with-integration-database && \
+        --without-integration-database && \
     rm -rf -- /opt/slurm-source
 
 EXPOSE 3306 6817 6818 6819 6820
@@ -118,25 +119,52 @@ FROM slurm-runtime AS finsim-app
 
 LABEL org.opencontainers.image.title="FinSim Slurm application runtime"
 
-COPY --from=dotnet-build --chown=root:root /publish /opt/finsim
+COPY --from=dotnet-build --chown=root:root /publish/FinSim /opt/finsim/FinSim
+COPY --from=dotnet-build --chown=root:root /publish/FinSimProxy /opt/finsim/FinSimProxy
 RUN find /opt/finsim -type d -exec chmod 0755 {} + && \
     find /opt/finsim -type f -exec chmod 0644 {} + && \
     chmod 0755 /opt/finsim/FinSim/FinSim \
-        /opt/finsim/FinSimProxy/FinSimProxy \
-        /opt/finsim/FinSimCache/FinSimCache
+        /opt/finsim/FinSimProxy/FinSimProxy
+
+
+# Single-host simulation artifact. MariaDB and FinSimCache are intentionally
+# absent from both production images and exist only here (and in finsim-dev).
+FROM finsim-app AS finsim-sim
+
+LABEL org.opencontainers.image.title="FinSim local Slurm simulation"
+
+# Reuse the verified installation interface so simulation-only MariaDB comes
+# from the same explicit, signed repository policy as every other dependency.
+# Calling the idempotent installer again also re-verifies /var/packages.
+COPY build/versions.conf /opt/finsim-sim/build/versions.conf
+COPY scripts/lib/build-common.sh /opt/finsim-sim/scripts/lib/build-common.sh
+COPY scripts/install-runtime.sh /opt/finsim-sim/scripts/install-runtime.sh
+RUN chmod 0755 /opt/finsim-sim/scripts/install-runtime.sh && \
+    /opt/finsim-sim/scripts/install-runtime.sh \
+        --versions-file /opt/finsim-sim/build/versions.conf \
+        --packages-dir /var/packages \
+        --with-integration-database && \
+    rm -rf -- /opt/finsim-sim && \
+    test "$(id -u mysql)" = 27 && test "$(id -g mysql)" = 27
+
+COPY --from=dotnet-build --chown=root:root /publish/FinSimCache /opt/finsim/FinSimCache
+RUN find /opt/finsim/FinSimCache -type d -exec chmod 0755 {} + && \
+    find /opt/finsim/FinSimCache -type f -exec chmod 0644 {} + && \
+    chmod 0755 /opt/finsim/FinSimCache/FinSimCache
 
 
 # Developer and TeamCity image. It intentionally contains source, the SDK,
 # tests, Compose inputs and diagnostics, but it is never promoted as a
 # production runtime artifact.
-FROM slurm-runtime AS finsim-dev
+FROM finsim-sim AS finsim-dev
 
 RUN dnf -y install dotnet-sdk-10.0 git jq findutils && \
     dnf clean all && \
     rm -rf -- /var/cache/dnf
 
 WORKDIR /workspace/finsim
-COPY . .
+COPY --chown=finsim:finsim . .
 
 ENTRYPOINT []
+USER finsim
 CMD ["/bin/bash"]

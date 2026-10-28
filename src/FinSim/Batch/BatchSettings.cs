@@ -9,7 +9,9 @@ public sealed record BatchSettings(
     Uri? SlurmUrl,
     string? SlurmTokenFile,
     bool SlurmAllowInsecureHttp,
-    int DeadlineSeconds)
+    int DeadlineSeconds,
+    string WorkerPartition = "debug",
+    string WorkerFeature = "finsim-worker")
 {
     public static BatchSettings FromEnvironment(bool requireSlurm)
     {
@@ -38,7 +40,9 @@ public sealed record BatchSettings(
             slurmUrl,
             slurmToken,
             slurmAllowHttp,
-            deadline);
+            deadline,
+            requireSlurm ? RequiredSchedulerName("FINSIM_WORKER_PARTITION") : "debug",
+            requireSlurm ? RequiredSchedulerName("FINSIM_WORKER_FEATURE") : "finsim-worker");
     }
 
     private static string Required(string name) =>
@@ -75,5 +79,15 @@ public sealed record BatchSettings(
         }
 
         return result;
+    }
+
+    private static string RequiredSchedulerName(string name)
+    {
+        var value = Required(name);
+        return System.Text.RegularExpressions.Regex.IsMatch(
+            value,
+            "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+            ? value
+            : throw new InvalidOperationException($"Setting {name} is invalid.");
     }
 }

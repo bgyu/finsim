@@ -11,7 +11,13 @@ builder.Services.AddFinSimJwtAuthentication(
     "finsim.cache");
 
 var cacheRoot = builder.Configuration["Cache:DataRoot"] ?? "/var/lib/finsim/cache";
+// Register both the concrete type (used by the readiness probe) and the
+// interface (used by the API).  Registering only the concrete type causes
+// Minimal API parameter inference to mistake IKeyValueStore for request data,
+// which fails the process during route construction rather than compilation.
 builder.Services.AddSingleton(new FileKeyValueStore(cacheRoot));
+builder.Services.AddSingleton<IKeyValueStore>(services =>
+    services.GetRequiredService<FileKeyValueStore>());
 
 var app = builder.Build();
 app.UseAuthentication();

@@ -10,7 +10,7 @@ project_dir=$(cd -- "$script_dir/.." && pwd)
 source "$script_dir/lib/build-common.sh"
 
 source_root=$project_dir
-integration_database=1
+integration_database=0
 
 usage() {
     cat <<'EOF'
@@ -20,8 +20,8 @@ Install users, directories, configurations, and service helpers.
 
 Options:
   --source-root DIRECTORY            Repository/runtime asset root
-  --with-integration-database        Require the local mysql identity (default)
-  --without-integration-database     Configure only external-database roles
+  --with-integration-database        Require the local-only mysql identity
+  --without-integration-database     External-database roles (default)
   -h, --help                         Show this help
 EOF
 }
@@ -148,7 +148,10 @@ install -d -o root -g root -m 0755 /var/spool/slurmd /var/lib/slurm/job_containe
 install -d -o slurmrestd -g slurmrestd -m 0750 \
     /run/slurmrestd /var/lib/slurmrestd
 install -d -o finsim -g finsim -m 0750 /var/lib/finsim
-install -d -o root -g root -m 0755 /usr/local/libexec/slurm /opt/finsim
+install -d -o finsim -g finsim -m 0700 \
+    /var/lib/finsim/cache /finsim-data /finsim-data/logs /finsim-data/reports
+install -d -o root -g root -m 0755 \
+    /usr/local/libexec/slurm /opt/finsim /finsim-credentials
 
 install_asset config/slurm.conf /etc/slurm/profiles/simulation/slurm.conf root slurm 0644
 install_asset config/cgroup.conf /etc/slurm/profiles/simulation/cgroup.conf root slurm 0644

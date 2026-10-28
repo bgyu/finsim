@@ -53,6 +53,9 @@ try
         Check(
             request.Headers.GetValues("X-SLURM-USER-TOKEN").Single() == "test.jwt.value",
             "Slurm submit reloads file token");
+        Check(
+            request.Content?.Headers.ContentType?.ToString() == "application/json",
+            "Slurm submit uses the exact registered JSON MIME type");
         return new HttpResponseMessage(HttpStatusCode.OK)
         {
             Content = new StringContent("{\"job_id\":{\"number\":42}}")
@@ -86,9 +89,15 @@ try
 
     var submitCount = 0;
     var workflowSlurm = new SlurmRestClient(
-        new HttpClient(new RecordingHandler(_ =>
+        new HttpClient(new RecordingHandler(request =>
         {
             submitCount++;
+            var body = JsonNode.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!;
+            Check(
+                body["job"]?["partition"]?.GetValue<string>() == "debug" &&
+                body["job"]?["constraints"]?.GetValue<string>() == "finsim-master",
+                "proxy constrains master to the credential-bearing pool");
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("{\"job_id\":71}")
@@ -175,6 +184,12 @@ try
     {
         if (request.Method == HttpMethod.Post)
         {
+            var body = JsonNode.Parse(
+                request.Content!.ReadAsStringAsync().GetAwaiter().GetResult())!;
+            Check(
+                body["job"]?["partition"]?.GetValue<string>() == "debug" &&
+                body["job"]?["constraints"]?.GetValue<string>() == "finsim-worker",
+                "master constrains workers to the credential-free pool");
             return new HttpResponseMessage(HttpStatusCode.OK)
             {
                 Content = new StringContent("{\"job_id\":91}")
