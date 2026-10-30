@@ -6,6 +6,7 @@ public sealed record BatchSettings(
     string CacheTokenFile,
     bool CacheAllowInsecureHttp,
     string DataRoot,
+    string ApplicationExecutable,
     Uri? SlurmUrl,
     string? SlurmTokenFile,
     bool SlurmAllowInsecureHttp,
@@ -19,6 +20,12 @@ public sealed record BatchSettings(
         var cacheAllowHttp = Flag("FINSIM_CACHE_ALLOW_INSECURE_HTTP");
         var cacheUrl = RequiredUri("FINSIM_CACHE_URL", cacheAllowHttp);
         var dataRoot = Path.GetFullPath(Required("FINSIM_DATA_ROOT"));
+        var applicationExecutable = Path.GetFullPath(Required("FINSIM_APPLICATION_EXECUTABLE"));
+        if (!applicationExecutable.StartsWith("/finsim-app/releases/", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "FINSIM_APPLICATION_EXECUTABLE must identify an immutable release.");
+        }
         var deadline = OptionalInt("FINSIM_DEADLINE_SECONDS", 600, 30, 86_400);
 
         Uri? slurmUrl = null;
@@ -37,6 +44,7 @@ public sealed record BatchSettings(
             Required("FINSIM_CACHE_TOKEN_FILE"),
             cacheAllowHttp,
             dataRoot,
+            applicationExecutable,
             slurmUrl,
             slurmToken,
             slurmAllowHttp,

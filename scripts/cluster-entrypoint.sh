@@ -13,6 +13,7 @@ readonly RUNTIME_MUNGE_KEY=/run/munge/munge.key
 readonly RUNTIME_JWT_KEY=$RUNTIME_CONFIG_DIR/jwt_hs256.key
 readonly RUNTIME_JWKS=$RUNTIME_CONFIG_DIR/slurm-jwks.json
 readonly RUNTIME_STORAGE_CA=$RUNTIME_CONFIG_DIR/storage_ca.pem
+readonly DEPLOYMENT_CONFIG_DIR=/etc/finsim-cluster
 
 role=${CONTAINER_ROLE:-}
 profile=${CLUSTER_DEPLOYMENT_PROFILE:-production}
@@ -176,7 +177,7 @@ validate_production_slurm_config() {
     [[ ",$tls_parameters," == *",ca_cert_file=$RUNTIME_CONFIG_DIR/ca_cert.pem,"* ]] ||
         die 'TLSParameters must use the staged control-plane CA path'
 
-    if [[ $role == compute ]]; then
+    if [[ $role == compute-master || $role == compute-worker ]]; then
         require_config_equals "$file" ProctrackType proctrack/cgroup
         require_config_contains "$file" TaskPlugin task/cgroup
         require_config_contains "$file" TaskPlugin task/affinity
@@ -212,16 +213,9 @@ prepare_runtime_directories() {
 prepare_slurm_config() {
     local source cgroup_source namespace_source
 
-    if [[ $profile == simulation ]]; then
-        source=${SLURM_CONFIG_FILE:-/etc/slurm/profiles/simulation/slurm.conf}
-        cgroup_source=${SLURM_CGROUP_CONFIG_FILE:-/etc/slurm/profiles/simulation/cgroup.conf}
-    else
-        [[ -n ${SLURM_CONFIG_FILE:-} ]] ||
-            die 'SLURM_CONFIG_FILE must be explicitly set for production'
-        source=$SLURM_CONFIG_FILE
-        cgroup_source=${SLURM_CGROUP_CONFIG_FILE:-/etc/slurm/profiles/production/cgroup.conf}
-        namespace_source=${SLURM_JOB_CONTAINER_CONFIG_FILE:-/etc/slurm/profiles/production/job_container.conf}
-    fi
+    source=${SLURM_CONFIG_FILE:-$DEPLOYMENT_CONFIG_DIR/slurm.conf}
+    cgroup_source=${SLURM_CGROUP_CONFIG_FILE:-$DEPLOYMENT_CONFIG_DIR/cgroup.conf}
+    namespace_source=${SLURM_JOB_CONTAINER_CONFIG_FILE:-$DEPLOYMENT_CONFIG_DIR/job_container.conf}
 
     validate_input_file "$source" slurm.conf public
     validate_input_file "$cgroup_source" cgroup.conf public
@@ -310,7 +304,7 @@ prepare_tls_identity() {
     case "$role" in
         controller) owner=slurm; cert_name=ctld_cert.pem; key_name=ctld_cert_key.pem ;;
         slurmdbd) owner=slurm; cert_name=dbd_cert.pem; key_name=dbd_cert_key.pem ;;
-        compute) owner=slurm; cert_name=slurmd_cert.pem; key_name=slurmd_cert_key.pem ;;
+        compute-master|compute-worker) owner=slurm; cert_name=slurmd_cert.pem; key_name=slurmd_cert_key.pem ;;
         restd) owner=slurmrestd; cert_name=restd_cert.pem; key_name=restd_cert_key.pem ;;
         *) die "TLS identity is not defined for role $role" ;;
     esac
@@ -471,8 +465,6 @@ read_password_file() {
 }
 
 run_database() {
-    [[ $profile == simulation ]] ||
-        die 'embedded MariaDB is integration-only; production must use an external HA database'
     local password_file=${MARIADB_SLURM_PASSWORD_FILE:-} password attempt
     [[ -n $password_file ]] || die 'MARIADB_SLURM_PASSWORD_FILE is required'
     password=$(read_password_file "$password_file" 'MariaDB Slurm password')
@@ -484,9 +476,10 @@ run_database() {
             --auth-root-authentication-method=socket
     fi
 
-    mariadbd --user=mysql --datadir=/var/lib/mysql \
-        --socket=/run/mariadb/mariadb.sock --bind-address=0.0.0.0 \
-        --skip-name-resolve &
+    local database_config=${MARIADB_CONFIG_FILE:-$DEPLOYMENT_CONFIG_DIR/mariadb-server.cnf}
+    validate_input_file "$database_config" 'MariaDB configuration' public
+    mariadbd --defaults-extra-file="$database_config" --user=mysql \
+        --datadir=/var/lib/mysql --socket=/run/mariadb/mariadb.sock &
     child_pids+=("$!")
 
     for ((attempt = 1; attempt <= 90; attempt++)); do
@@ -527,7 +520,7 @@ render_slurmdbd_config() {
             die 'SLURMDBD_CONFIG_TEMPLATE must be explicitly set for production'
         template=$SLURMDBD_CONFIG_TEMPLATE
     else
-        template=${SLURMDBD_CONFIG_TEMPLATE:-/etc/slurm/profiles/simulation/slurmdbd.conf.template}
+        template=${SLURMDBD_CONFIG_TEMPLATE:-$DEPLOYMENT_CONFIG_DIR/slurmdbd.conf.template}
     fi
     validate_input_file "$template" 'slurmdbd configuration template' public
     validate_host "$host" 'database host'
@@ -781,7 +774,7 @@ run_restd() {
     child_pids+=("$!")
 }
 
-run_token_issuer() {
+run_token_agent() {
     [[ $profile == simulation ]] ||
         die 'the built-in token issuer is forbidden outside the simulation profile'
     prepare_slurm_config
@@ -793,6 +786,21 @@ run_token_issuer() {
     # short-lived token for the non-administrative FinSim identity.
     log 'starting development-only short-lived token issuer'
     /usr/local/sbin/dev-token-renewer &
+    child_pids+=("$!")
+}
+
+run_application() {
+    (($#)) || usage_error 'application role requires an executable and optional arguments'
+    local executable=$1
+    [[ $executable == /finsim-app/releases/* && -f $executable && -x $executable && ! -L $executable ]] ||
+        die 'application executable must be a non-symlink executable in /finsim-app/releases'
+    [[ $(stat --format='%u' -- "$executable") -eq 0 ]] ||
+        die 'application executable must be root-owned'
+    local mode
+    mode=$(stat --format='%a' -- "$executable")
+    (((8#$mode & 0022) == 0)) || die 'application executable must not be group/world writable'
+    log "starting application as uid 64032 from immutable release"
+    runuser --user finsim -- "$@" &
     child_pids+=("$!")
 }
 
@@ -813,7 +821,7 @@ case "$profile" in
     *) usage_error 'CLUSTER_DEPLOYMENT_PROFILE must be simulation or production' ;;
 esac
 case "$role" in
-    database|slurmdbd|controller|compute|restd|token-issuer) ;;
+    database|slurmdbd|controller|compute-master|compute-worker|restd|token-agent|application) ;;
     *) usage_error 'unsupported CONTAINER_ROLE' ;;
 esac
 
@@ -822,15 +830,16 @@ esac
 # sentinel in its own environment.
 unset SLURM_JWT
 umask 077
-prepare_runtime_directories
+[[ $role == application ]] || prepare_runtime_directories
 
 case "$role" in
     database) run_database ;;
     slurmdbd) run_slurmdbd ;;
     controller) run_controller ;;
-    compute) run_compute ;;
+    compute-master|compute-worker) run_compute ;;
     restd) run_restd ;;
-    token-issuer) run_token_issuer ;;
+    token-agent) run_token_agent ;;
+    application) run_application "$@" ;;
 esac
 
 wait_for_essential_process

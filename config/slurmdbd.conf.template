@@ -1,8 +1,9 @@
-# ROOTLESS INTEGRATION PROFILE ONLY. The password placeholder is rendered from
-# SLURMDBD_STORAGE_PASSWORD_FILE into a private tmpfs-backed runtime copy. A
-# secret value must never be put directly in this template or an environment.
+# Rendered into private tmpfs by the slurmdbd role. The password is read from
+# its credential file and never stored in this external non-secret template.
 AuthType=auth/munge
-DbdHost=slurmdbd
+@AUTH_CONFIGURATION@
+@CONTROL_TLS_CONFIGURATION@
+@DBD_HOST_CONFIGURATION@
 DbdPort=6819
 SlurmUser=slurm
 DebugLevel=info

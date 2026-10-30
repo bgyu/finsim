@@ -1,0 +1,53 @@
+# Rendered by scripts/prepare-config.sh. Do not edit generated copies.
+ClusterName=@CLUSTER_NAME@
+@CONTROLLER_LINES@
+
+AuthType=auth/munge
+CredType=cred/munge
+AuthAltTypes=auth/jwt
+AuthAltParameters=@AUTH_ALT_PARAMETERS@
+@TLS_LINES@
+
+DisableRootJobs=YES
+MpiDefault=none
+ProctrackType=@PROCTRACK_TYPE@
+ReturnToService=2
+SlurmctldPidFile=/run/slurm/pids/slurmctld.pid
+SlurmdPidFile=/run/slurm/pids/slurmd.pid
+SlurmdSpoolDir=/var/spool/slurmd
+StateSaveLocation=/var/spool/slurmctld
+SlurmUser=slurm
+SlurmdUser=root
+SwitchType=switch/none
+TaskPlugin=@TASK_PLUGIN@
+CommunicationParameters=disable_http
+@CONTAINMENT_LINES@
+
+SlurmctldPort=6817
+SlurmdPort=6818
+SlurmctldTimeout=120
+SlurmdTimeout=300
+MessageTimeout=30
+SlurmctldParameters=enable_configless
+MaxNodeCount=@MAX_NODE_COUNT@
+MaxJobCount=@MAX_JOB_COUNT@
+MaxArraySize=100001
+MaxStepCount=10000
+SchedulerType=sched/backfill
+SelectType=select/cons_tres
+SelectTypeParameters=CR_Core_Memory
+
+AccountingStorageType=accounting_storage/slurmdbd
+@ACCOUNTING_HOST_LINES@
+AccountingStoragePort=6819
+AccountingStorageEnforce=associations,limits,safe
+JobAcctGatherType=@JOB_ACCT_GATHER_TYPE@
+JobAcctGatherFrequency=30
+@PRIVATE_DATA_LINE@
+
+# Configless dynamic registration supplies node resources and one of these
+# features. The partition name and feature constraint are both set on every
+# FinSim REST submission.
+SlurmdParameters=config_overrides
+PartitionName=orchestrator Nodes=ALL Default=NO DefaultTime=00:10:00 MaxTime=01:00:00 State=UP
+PartitionName=batch Nodes=ALL Default=YES DefaultTime=00:10:00 MaxTime=1-00:00:00 State=UP

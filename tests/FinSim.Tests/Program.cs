@@ -116,7 +116,8 @@ try
             ["Slurm:BaseUrl"] = "http://slurm.test/",
             ["Slurm:AllowInsecureHttp"] = "true",
             ["Slurm:TokenFile"] = tokenFile,
-            ["Paths:DataRoot"] = Path.Combine(temporaryRoot, "data")
+            ["Paths:DataRoot"] = Path.Combine(temporaryRoot, "data"),
+            ["Paths:ApplicationExecutable"] = "/finsim-app/releases/test/FinSim/FinSim"
         })
         .Build();
     var workflows = new WorkflowService(store, workflowSlurm, configuration);
@@ -161,6 +162,7 @@ try
         tokenFile,
         false,
         Path.Combine(temporaryRoot, "worker-data"),
+        "/finsim-app/releases/test/FinSim/FinSim",
         null,
         null,
         false,
@@ -225,6 +227,7 @@ try
         tokenFile,
         false,
         Path.Combine(temporaryRoot, "master-data"),
+        "/finsim-app/releases/test/FinSim/FinSim",
         new Uri("https://slurm.test/"),
         tokenFile,
         false,

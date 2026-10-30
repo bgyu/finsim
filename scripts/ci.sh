@@ -22,13 +22,7 @@ verify() {
         exit 1
     fi
 
-    # The image build performs locked NuGet restore, warnings-as-errors build,
-    # managed contract tests, and publish. The dev target proves the supported
-    # TeamCity/developer tool image can also be assembled from the same base.
-    podman build --format docker --target finsim-app \
-        --tag "localhost/finsim-app:$image_tag" --file Containerfile .
-    podman build --format docker --target finsim-dev \
-        --tag "localhost/finsim-dev:$image_tag" --file Containerfile .
+    FINSIM_IMAGE_TAG=$image_tag scripts/build-images.sh
 }
 
 case "$mode" in
@@ -41,7 +35,9 @@ case "$mode" in
             [[ ${KEEP_CLUSTER:-0} == 1 ]] || scripts/cluster-down.sh || true
         }
         trap cleanup EXIT
-        FINSIM_IMAGE_TAG=$image_tag scripts/cluster-up.sh
+        FINSIM_IMAGE_TAG=$image_tag FINSIM_APP_RELEASE="ci-$image_tag" \
+            scripts/prepare-cluster.sh
+        scripts/cluster-up.sh
         scripts/acceptance-test.sh
         ;;
     *)

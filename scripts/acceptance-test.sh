@@ -18,6 +18,8 @@ for command in podman curl python3 rg; do
 done
 
 [[ -f .runtime/cluster.env ]] || fail 'run scripts/cluster-up.sh first'
+# shellcheck disable=SC1091
+source .runtime/cluster.env
 
 # Prevent an accidental regression to shelling out from application code.
 if rg -n '\b(sbatch|squeue|sacct|scancel|scontrol)\b' src; then
@@ -28,7 +30,7 @@ python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 declare -a required_containers=(
     finsim-controller finsim_database_1 finsim_slurmdbd_1 finsim_restd_1
-    finsim_token-issuer_1 finsim_cache_1 finsim_proxy_1
+    finsim_token-agent_1 finsim_cache_1 finsim_proxy_1
     finsim_compute001_1 finsim_compute002_1 finsim_compute003_1
     finsim_compute004_1 finsim_compute005_1
 )
@@ -43,7 +45,10 @@ done
 idle_nodes=$(podman exec finsim-controller \
     sinfo --noheader --states=idle --Node --format='%N' | sort -u | awk 'NF {n++} END {print n+0}')
 [[ $idle_nodes -eq 5 ]] || fail "expected five idle nodes, found $idle_nodes"
-feature_map=$(podman exec finsim-controller sinfo --noheader --Node --format='%N|%f')
+# A node appears once per partition in sinfo output.  Count the unique
+# node/feature mapping so overlapping production partitions do not inflate
+# the topology assertions.
+feature_map=$(podman exec finsim-controller sinfo --noheader --Node --format='%N|%f' | sort -u)
 [[ $(awk -F'|' '$2 == "finsim-master" {n++} END {print n+0}' <<<"$feature_map") -eq 1 ]] ||
     fail 'expected exactly one finsim-master node'
 [[ $(awk -F'|' '$2 == "finsim-worker" {n++} END {print n+0}' <<<"$feature_map") -eq 4 ]] ||
@@ -124,16 +129,22 @@ worker_nodes=$(podman exec finsim-controller sacct --starttime today --noheader 
     fail 'slurmctld is not running as uid 64030'
 [[ $(podman exec finsim_restd_1 pgrep -u 64031 -x slurmrestd | wc -l) -eq 1 ]] ||
     fail 'slurmrestd is not running as uid 64031'
-[[ $(podman exec finsim_proxy_1 id -u) == 64032 ]] || fail 'proxy is not uid 64032'
-[[ $(podman exec finsim_cache_1 id -u) == 64032 ]] || fail 'cache is not uid 64032'
+# `podman exec` inherits the container's bootstrap user (root); inspect the
+# long-running payload itself to prove the entrypoint dropped privileges.
+[[ $(podman exec finsim_proxy_1 pgrep -u 64032 -x FinSimProxy | wc -l) -eq 1 ]] ||
+    fail 'proxy is not running as uid 64032'
+[[ $(podman exec finsim_cache_1 pgrep -u 64032 -x FinSimCache | wc -l) -eq 1 ]] ||
+    fail 'cache is not running as uid 64032'
 
-# Production artifacts exclude SDK/build inputs and local-only services.
-podman run --rm --entrypoint /bin/bash localhost/finsim-app:latest -ceu '
+# The universal runtime intentionally contains every daemon and MariaDB, but
+# excludes the SDK, source, Compose assets and application binaries.
+podman run --rm --entrypoint /bin/bash \
+    "localhost/finsim-runtime:${FINSIM_IMAGE_TAG:-latest}" -ceu '
     ! dotnet --list-sdks | grep -q .
     test ! -e /src
     test ! -e /workspace
-    test ! -e /opt/finsim/FinSimCache
-    ! rpm -q mariadb-server >/dev/null 2>&1
+    test ! -e /finsim-app/releases/dev/FinSim
+    rpm -q mariadb-server >/dev/null
 '
 
 printf 'FinSim acceptance test passed.\n'

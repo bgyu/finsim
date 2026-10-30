@@ -29,7 +29,7 @@ case "$role" in
         pgrep -u slurm -x slurmctld >/dev/null
         timeout 5 scontrol ping 2>/dev/null | grep -q 'UP'
         ;;
-    compute)
+    compute-master|compute-worker)
         pgrep -u root -x slurmd >/dev/null
         host=$(hostname -s)
         # Dynamic registration uses the container's hostname as NodeHostName.
@@ -63,7 +63,7 @@ case "$role" in
         # FinSimProxy and external monitoring.
         timeout 5 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' _ "$port"
         ;;
-    token-issuer)
+    token-agent)
         token_file=${SLURM_TOKEN_FILE:-/run/slurm-token/finsim.jwt}
         pgrep -f '^/usr/bin/bash /usr/local/sbin/dev-token-renewer$' >/dev/null ||
             pgrep -f '^bash /usr/local/sbin/dev-token-renewer$' >/dev/null
@@ -71,6 +71,12 @@ case "$role" in
         # Rotation occurs every five minutes by default; a ten-minute bound
         # catches a wedged issuer without parsing or printing the bearer token.
         find "$token_file" -maxdepth 0 -type f -mmin -10 | grep -q .
+        ;;
+    application)
+        # Application roles provide their own HTTP health checks in Compose or
+        # the production service manager; the generic check proves PID 1 still
+        # supervises an application child running as the fixed FinSim UID.
+        pgrep -u 64032 >/dev/null
         ;;
     *)
         exit 1

@@ -1,201 +1,162 @@
 name: finsim
 
-# Rootless single-host integration topology. Production uses role-specific
-# deployment units, TLS, external accounting/data services, and rootful
-# dedicated compute hosts; it does not deploy this Compose file.
-
-x-runtime-security: &runtime-security
+# Single-host scheduler for the same role/mount contract used in production.
+# Every service uses finsim-runtime; finsim-dev is only a developer/CI toolbox.
+x-common: &common
+  image: localhost/finsim-runtime:${FINSIM_IMAGE_TAG:-latest}
+  user: "0:0"
   read_only: true
-  security_opt:
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  cap_add:
-    - CHOWN
-    - DAC_OVERRIDE
-    - FOWNER
-    - KILL
-    - SETGID
-    - SETUID
-  pids_limit: 512
+  security_opt: ["no-new-privileges:true"]
+  restart: unless-stopped
+  stop_grace_period: 60s
   tmpfs:
     - /run:rw,nodev,nosuid,noexec,size=64m,mode=0755
     - /tmp:rw,nodev,nosuid,noexec,size=128m,mode=1777
-    - /var/log:rw,nodev,nosuid,noexec,size=64m,mode=0755
-    - /var/lib/munge:rw,nodev,nosuid,noexec,size=16m,mode=0700
-  restart: unless-stopped
-  stop_grace_period: 60s
 
-x-slurm-daemon: &slurm-daemon
-  <<: *runtime-security
-  image: localhost/finsim-sim:${FINSIM_IMAGE_TAG:-latest}
-  environment:
+x-slurm: &slurm
+  <<: *common
+  environment: &slurm-env
     CLUSTER_DEPLOYMENT_PROFILE: simulation
     START_EMBEDDED_MUNGE: "1"
     MUNGE_KEY_FILE: /run/secrets/munge.key
+    # Keep administrative CLI commands usable through `podman exec` while
+    # daemons still receive the same externally mounted configuration.
+    SLURM_CONF: /etc/finsim-cluster/slurm.conf
+  cap_drop: [ALL]
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID]
   volumes:
+    - ./.runtime/config:/etc/finsim-cluster:ro,z
     - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
-  networks:
-    - control
+  networks: [control]
 
 x-compute: &compute
-  <<: *slurm-daemon
-  image: localhost/finsim-sim:${FINSIM_IMAGE_TAG:-latest}
-  environment: &compute-environment
-    CONTAINER_ROLE: compute
+  <<: *slurm
+  depends_on:
+    controller: {condition: service_started}
+    cache: {condition: service_healthy}
+  environment: &compute-env
     CLUSTER_DEPLOYMENT_PROFILE: simulation
     START_EMBEDDED_MUNGE: "1"
     MUNGE_KEY_FILE: /run/secrets/munge.key
     SLURM_CONF_SERVER: controller:6817
-  depends_on:
-    controller:
-      condition: service_started
-    cache:
-      condition: service_healthy
-  cap_add:
-    - CHOWN
-    - DAC_OVERRIDE
-    - FOWNER
-    - KILL
-    - SETGID
-    - SETUID
-    - SYS_NICE
-  cpus: 2.0
-  mem_limit: 1536m
+  cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, KILL, SETGID, SETUID, SYS_NICE]
 
-x-app-security: &app-security
-  image: localhost/finsim-sim:${FINSIM_IMAGE_TAG:-latest}
-  user: "64032:64032"
-  read_only: true
-  security_opt:
-    - no-new-privileges:true
-  cap_drop:
-    - ALL
-  pids_limit: 256
-  tmpfs:
-    - /tmp:rw,nodev,nosuid,noexec,size=64m,mode=1777
-  restart: unless-stopped
-  stop_grace_period: 30s
+x-app: &app
+  <<: *common
+  environment:
+    CONTAINER_ROLE: application
+    CLUSTER_DEPLOYMENT_PROFILE: simulation
+  cap_drop: [ALL]
+  cap_add: [SETGID, SETUID]
+  networks: [control]
 
 services:
   database:
-    <<: *runtime-security
-    image: localhost/finsim-sim:${FINSIM_IMAGE_TAG:-latest}
+    <<: *common
     hostname: database
     environment:
       CONTAINER_ROLE: database
       CLUSTER_DEPLOYMENT_PROFILE: simulation
       MARIADB_SLURM_PASSWORD_FILE: /run/secrets/mariadb-slurm.password
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/mariadb-slurm.password:/run/secrets/mariadb-slurm.password:ro,z
-      - mariadb-data:/var/lib/mysql
-    networks:
-      - accounting
+      - ./.runtime/state/mariadb:/var/lib/mysql:z
+    networks: [accounting]
 
   slurmdbd:
-    <<: *slurm-daemon
+    <<: *slurm
     hostname: slurmdbd
     environment:
+      <<: *slurm-env
       CONTAINER_ROLE: slurmdbd
-      CLUSTER_DEPLOYMENT_PROFILE: simulation
-      START_EMBEDDED_MUNGE: "1"
-      MUNGE_KEY_FILE: /run/secrets/munge.key
       SLURMDBD_STORAGE_PASSWORD_FILE: /run/secrets/mariadb-slurm.password
       SLURM_JWT_KEY_FILE: /run/secrets/slurm-jwt-hs256.key
-    depends_on:
-      - database
+    depends_on: [database]
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/secrets/mariadb-slurm.password:/run/secrets/mariadb-slurm.password:ro,z
       - ./.runtime/secrets/slurm-jwt-hs256.key:/run/secrets/slurm-jwt-hs256.key:ro,z
-    networks:
-      - accounting
-      - control
+      - ./.runtime/state/slurmdbd:/var/lib/slurm:z
+    networks: [accounting, control]
 
   controller:
-    <<: *slurm-daemon
+    <<: *slurm
     container_name: finsim-controller
     hostname: controller
     environment:
+      <<: *slurm-env
       CONTAINER_ROLE: controller
-      CLUSTER_DEPLOYMENT_PROFILE: simulation
-      START_EMBEDDED_MUNGE: "1"
-      MUNGE_KEY_FILE: /run/secrets/munge.key
       SLURM_JWT_KEY_FILE: /run/secrets/slurm-jwt-hs256.key
-    depends_on:
-      - slurmdbd
+    depends_on: [slurmdbd]
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/secrets/slurm-jwt-hs256.key:/run/secrets/slurm-jwt-hs256.key:ro,z
-      - controller-state:/var/spool/slurmctld
-      - finsim-data:/finsim-data
+      - ./.runtime/state/slurmctld:/var/spool/slurmctld:z
+      - ./.runtime/data:/finsim-data:z
 
-  token-issuer:
-    <<: *slurm-daemon
-    hostname: token-issuer
+  token-agent:
+    <<: *slurm
+    hostname: token-agent
     environment:
-      CONTAINER_ROLE: token-issuer
-      CLUSTER_DEPLOYMENT_PROFILE: simulation
-      START_EMBEDDED_MUNGE: "1"
-      MUNGE_KEY_FILE: /run/secrets/munge.key
+      <<: *slurm-env
+      CONTAINER_ROLE: token-agent
       ALLOW_DEVELOPMENT_TOKEN_ISSUER: "1"
-      SLURM_TOKEN_FILE: /run/slurm-token/finsim.jwt
+      SLURM_TOKEN_FILE: /run/credentials/finsim.jwt
       SLURM_TOKEN_USER: finsim
       SLURM_TOKEN_LIFESPAN: "900"
       SLURM_TOKEN_REFRESH_SECONDS: "300"
-    depends_on:
-      - controller
+    depends_on: [controller]
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
-      - slurm-token:/run/slurm-token
+      - ./.runtime/credentials:/run/credentials:z
 
   restd:
-    <<: *slurm-daemon
+    <<: *slurm
     hostname: restd
     environment:
+      <<: *slurm-env
       CONTAINER_ROLE: restd
-      CLUSTER_DEPLOYMENT_PROFILE: simulation
-      START_EMBEDDED_MUNGE: "1"
-      MUNGE_KEY_FILE: /run/secrets/munge.key
       REST_AUTH_MODE: jwt
       SLURMRESTD_LISTEN: 0.0.0.0:6820
-      SLURMRESTD_MAX_CONNECTIONS: "32"
-    depends_on:
-      - controller
-    expose:
-      - "6820"
+    depends_on: [controller]
+    expose: ["6820"]
 
   cache:
-    <<: *app-security
+    <<: *app
     hostname: cache
-    entrypoint:
-      - /opt/finsim/FinSimCache/FinSimCache
+    command: ["/finsim-app/releases/${FINSIM_APP_RELEASE}/FinSimCache/FinSimCache"]
     environment:
+      CONTAINER_ROLE: application
+      CLUSTER_DEPLOYMENT_PROFILE: simulation
       ASPNETCORE_URLS: http://0.0.0.0:8090
       Jwt__Issuer: finsim-development
       Jwt__Audience: finsim-cache
       Jwt__JwksFile: /run/secrets/app-jwks.json
       Cache__DataRoot: /var/lib/finsim/cache
     volumes:
+      - ./.runtime/apps:/finsim-app:ro,z
       - ./.runtime/public/app-jwks.json:/run/secrets/app-jwks.json:ro,z
-      - cache-state:/var/lib/finsim/cache
-    networks:
-      - control
-    expose:
-      - "8090"
+      - ./.runtime/data/cache:/var/lib/finsim/cache:z
+    expose: ["8090"]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8090/health/ready"]
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8090/health/ready]
       interval: 10s
       timeout: 3s
       retries: 12
-      start_period: 10s
 
   proxy:
-    <<: *app-security
+    <<: *app
     hostname: proxy
-    entrypoint:
-      - /opt/finsim/FinSimProxy/FinSimProxy
+    command: ["/finsim-app/releases/${FINSIM_APP_RELEASE}/FinSimProxy/FinSimProxy"]
     environment:
+      CONTAINER_ROLE: application
+      CLUSTER_DEPLOYMENT_PROFILE: simulation
       ASPNETCORE_URLS: http://0.0.0.0:8088
       Jwt__Issuer: finsim-development
       Jwt__Audience: finsim-proxy
@@ -206,113 +167,97 @@ services:
       Cache__JobTokenFile: /finsim-credentials/cache.jwt
       Slurm__BaseUrl: http://restd:6820/
       Slurm__AllowInsecureHttp: "true"
-      Slurm__TokenFile: /run/slurm-token/finsim.jwt
+      Slurm__TokenFile: /run/credentials/finsim.jwt
       Slurm__User: finsim
-      Slurm__MasterPartition: debug
+      Slurm__MasterPartition: orchestrator
       Slurm__MasterFeature: finsim-master
-      Slurm__WorkerPartition: debug
+      Slurm__WorkerPartition: batch
       Slurm__WorkerFeature: finsim-worker
       Paths__DataRoot: /finsim-data
+      Paths__ApplicationExecutable: /finsim-app/releases/${FINSIM_APP_RELEASE}/FinSim/FinSim
     depends_on:
-      cache:
-        condition: service_healthy
-      restd:
-        condition: service_healthy
-      token-issuer:
-        condition: service_healthy
+      cache: {condition: service_healthy}
+      restd: {condition: service_healthy}
+      token-agent: {condition: service_healthy}
     volumes:
+      - ./.runtime/apps:/finsim-app:ro,z
+      - ./.runtime/data:/finsim-data:z
       - ./.runtime/public/app-jwks.json:/run/secrets/app-jwks.json:ro,z
       - ./.runtime/container-secrets/cache-client.jwt:/run/secrets/cache-client.jwt:ro,z
-      - slurm-token:/run/slurm-token:ro
-      - finsim-data:/finsim-data
-    networks:
-      - control
-      - edge
-    ports:
-      - "127.0.0.1:${FINSIM_PROXY_PORT:-8088}:8088"
+      - ./.runtime/credentials:/run/credentials:ro,z
+    networks: [control, edge]
+    ports: ["127.0.0.1:${FINSIM_PROXY_PORT:-8088}:8088"]
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8088/health/ready"]
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8088/health/ready]
       interval: 10s
       timeout: 3s
       retries: 18
-      start_period: 20s
 
   compute001:
     <<: *compute
     hostname: compute-host-001
     environment:
-      <<: *compute-environment
+      <<: *compute-env
+      CONTAINER_ROLE: compute-master
       SLURMD_FEATURE: finsim-master
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/container-secrets/cache-client.jwt:/finsim-credentials/cache.jwt:ro,z
-      - slurm-token:/run/slurm-token:ro
-      - finsim-data:/finsim-data
-      - compute001-spool:/var/spool/slurmd
+      - ./.runtime/credentials:/run/credentials:ro,z
+      - ./.runtime/apps:/finsim-app:ro,z
+      - ./.runtime/data:/finsim-data:z
+      - ./.runtime/state/slurmd/compute001:/var/spool/slurmd:z
 
   compute002:
     <<: *compute
     hostname: compute-host-002
-    environment:
-      <<: *compute-environment
+    environment: &worker-env
+      <<: *compute-env
+      CONTAINER_ROLE: compute-worker
       SLURMD_FEATURE: finsim-worker
-    volumes:
+    volumes: &worker-volumes
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/container-secrets/cache-client.jwt:/finsim-credentials/cache.jwt:ro,z
-      - finsim-data:/finsim-data
-      - compute002-spool:/var/spool/slurmd
-
+      - ./.runtime/apps:/finsim-app:ro,z
+      - ./.runtime/data:/finsim-data:z
+      - ./.runtime/state/slurmd/compute002:/var/spool/slurmd:z
   compute003:
     <<: *compute
     hostname: compute-host-003
-    environment:
-      <<: *compute-environment
-      SLURMD_FEATURE: finsim-worker
+    environment: *worker-env
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/container-secrets/cache-client.jwt:/finsim-credentials/cache.jwt:ro,z
-      - finsim-data:/finsim-data
-      - compute003-spool:/var/spool/slurmd
-
+      - ./.runtime/apps:/finsim-app:ro,z
+      - ./.runtime/data:/finsim-data:z
+      - ./.runtime/state/slurmd/compute003:/var/spool/slurmd:z
   compute004:
     <<: *compute
     hostname: compute-host-004
-    environment:
-      <<: *compute-environment
-      SLURMD_FEATURE: finsim-worker
+    environment: *worker-env
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/container-secrets/cache-client.jwt:/finsim-credentials/cache.jwt:ro,z
-      - finsim-data:/finsim-data
-      - compute004-spool:/var/spool/slurmd
-
+      - ./.runtime/apps:/finsim-app:ro,z
+      - ./.runtime/data:/finsim-data:z
+      - ./.runtime/state/slurmd/compute004:/var/spool/slurmd:z
   compute005:
     <<: *compute
     hostname: compute-host-005
-    environment:
-      <<: *compute-environment
-      SLURMD_FEATURE: finsim-worker
+    environment: *worker-env
     volumes:
+      - ./.runtime/config:/etc/finsim-cluster:ro,z
       - ./.runtime/secrets/munge.key:/run/secrets/munge.key:ro,z
       - ./.runtime/container-secrets/cache-client.jwt:/finsim-credentials/cache.jwt:ro,z
-      - finsim-data:/finsim-data
-      - compute005-spool:/var/spool/slurmd
+      - ./.runtime/apps:/finsim-app:ro,z
+      - ./.runtime/data:/finsim-data:z
+      - ./.runtime/state/slurmd/compute005:/var/spool/slurmd:z
 
 networks:
-  accounting:
-    internal: true
-  control:
-    internal: true
+  accounting: {internal: true}
+  control: {internal: true}
   edge: {}
-
-volumes:
-  mariadb-data:
-  controller-state:
-  cache-state:
-  finsim-data:
-  slurm-token:
-  compute001-spool:
-  compute002-spool:
-  compute003-spool:
-  compute004-spool:
-  compute005-spool:

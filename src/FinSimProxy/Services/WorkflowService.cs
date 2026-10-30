@@ -27,6 +27,7 @@ public sealed partial class WorkflowService
     private readonly string workerPartition;
     private readonly string workerFeature;
     private readonly string dataRoot;
+    private readonly string applicationExecutable;
     private readonly bool allowInsecureSlurm;
 
     public WorkflowService(
@@ -51,6 +52,15 @@ public sealed partial class WorkflowService
         workerPartition = SchedulerName(configuration["Slurm:WorkerPartition"] ?? "debug");
         workerFeature = SchedulerName(configuration["Slurm:WorkerFeature"] ?? "finsim-worker");
         dataRoot = Path.GetFullPath(configuration["Paths:DataRoot"] ?? "/finsim-data");
+        applicationExecutable = Path.GetFullPath(
+            Required(configuration, "Paths:ApplicationExecutable"));
+        if (!applicationExecutable.StartsWith(
+                "/finsim-app/releases/",
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The application executable must be an existing immutable release path.");
+        }
     }
 
     public async Task<CreateSimulationResponse> CreateAsync(
@@ -238,7 +248,10 @@ public sealed partial class WorkflowService
         {
             _ = PrivateTokenFile.Read(cacheTokenFile);
             _ = PrivateTokenFile.Read(slurmTokenFile);
-            return Directory.Exists(dataRoot) && new DirectoryInfo(dataRoot).LinkTarget is null;
+            return Directory.Exists(dataRoot) &&
+                   new DirectoryInfo(dataRoot).LinkTarget is null &&
+                   File.Exists(applicationExecutable) &&
+                   new FileInfo(applicationExecutable).LinkTarget is null;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -263,6 +276,7 @@ public sealed partial class WorkflowService
             ["FINSIM_SLURM_TOKEN_FILE"] = slurmTokenFile,
             ["FINSIM_SLURM_ALLOW_INSECURE_HTTP"] = allowInsecureSlurm ? "1" : "0",
             ["FINSIM_DATA_ROOT"] = dataRoot,
+            ["FINSIM_APPLICATION_EXECUTABLE"] = applicationExecutable,
             ["FINSIM_DEADLINE_SECONDS"] = "600",
             ["FINSIM_MAX_PARALLEL"] = request.MaxParallel.ToString(
                 System.Globalization.CultureInfo.InvariantCulture),
@@ -274,7 +288,7 @@ public sealed partial class WorkflowService
         var name = $"finsim-{workflowId:N}"[..19] + "-m";
         return new JsonObject
         {
-            ["script"] = "#!/bin/bash\nset -Eeuo pipefail\numask 077\nexec /opt/finsim/FinSim/FinSim master\n",
+            ["script"] = "#!/bin/bash\nset -Eeuo pipefail\numask 077\nexec \"${FINSIM_APPLICATION_EXECUTABLE}\" master\n",
             ["job"] = new JsonObject
             {
                 ["name"] = name,

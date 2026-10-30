@@ -10,7 +10,6 @@ project_dir=$(cd -- "$script_dir/.." && pwd)
 source "$script_dir/lib/build-common.sh"
 
 source_root=$project_dir
-integration_database=0
 
 usage() {
     cat <<'EOF'
@@ -20,8 +19,6 @@ Install users, directories, configurations, and service helpers.
 
 Options:
   --source-root DIRECTORY            Repository/runtime asset root
-  --with-integration-database        Require the local-only mysql identity
-  --without-integration-database     External-database roles (default)
   -h, --help                         Show this help
 EOF
 }
@@ -29,8 +26,6 @@ EOF
 while (($#)); do
     case $1 in
         --source-root) (($# >= 2)) || build_die "$1 requires a value"; source_root=$2; shift 2 ;;
-        --with-integration-database) integration_database=1; shift ;;
-        --without-integration-database) integration_database=0; shift ;;
         -h|--help) usage; exit 0 ;;
         *) build_die "unknown option: $1" ;;
     esac
@@ -62,7 +57,8 @@ ensure_group() {
 }
 
 ensure_user() {
-    local name=$1 uid=$2 group=$3 home=$4 comment=$5 current collision shell
+    local name=$1 uid=$2 group=$3 home=$4 comment=$5
+    local expected_shell=${6:-/sbin/nologin} current collision shell
     current=$(getent passwd "$name" || true)
     if [[ -n $current ]]; then
         [[ $(cut -d: -f3 <<<"$current") == "$uid" ]] ||
@@ -72,14 +68,15 @@ ensure_user() {
         [[ $(cut -d: -f6 <<<"$current") == "$home" ]] ||
             build_die "user $name has an unexpected home directory"
         shell=$(cut -d: -f7 <<<"$current")
-        [[ $shell == /sbin/nologin || $shell == /usr/sbin/nologin ]] ||
+        [[ $shell == "$expected_shell" ||
+           ( $expected_shell == /sbin/nologin && $shell == /usr/sbin/nologin ) ]] ||
             build_die "user $name has an unexpected login shell"
         return
     fi
     collision=$(getent passwd "$uid" || true)
     [[ -z $collision ]] || build_die "UID $uid is already assigned to another user"
     useradd --system --uid "$uid" --gid "$group" --home-dir "$home" \
-        --shell /sbin/nologin --comment "$comment" "$name"
+        --shell "$expected_shell" --comment "$comment" "$name"
 }
 
 normalize_munge_identity() {
@@ -134,11 +131,11 @@ ensure_group slurmrestd 64031
 ensure_user slurmrestd 64031 slurmrestd /var/lib/slurmrestd 'Slurm REST daemon'
 ensure_group finsim 64032
 ensure_user finsim 64032 finsim /var/lib/finsim 'FinSim batch service identity'
+ensure_group developer 1000
+ensure_user developer 1000 developer /home/developer 'FinSim development identity' /bin/bash
 
 chown -R munge:munge /etc/munge /var/lib/munge /var/log/munge
-install -d -o root -g slurm -m 0755 /etc/slurm/profiles \
-    /etc/slurm/profiles/simulation /etc/slurm/profiles/production \
-    /run/slurm /run/slurm/config
+install -d -o root -g slurm -m 0755 /run/slurm /run/slurm/config
 install -d -o slurm -g slurm -m 0755 /run/slurm/pids
 install -d -o munge -g munge -m 0700 /var/lib/munge
 install -d -o munge -g munge -m 0755 /run/munge /var/log/munge
@@ -151,15 +148,8 @@ install -d -o finsim -g finsim -m 0750 /var/lib/finsim
 install -d -o finsim -g finsim -m 0700 \
     /var/lib/finsim/cache /finsim-data /finsim-data/logs /finsim-data/reports
 install -d -o root -g root -m 0755 \
-    /usr/local/libexec/slurm /opt/finsim /finsim-credentials
-
-install_asset config/slurm.conf /etc/slurm/profiles/simulation/slurm.conf root slurm 0644
-install_asset config/cgroup.conf /etc/slurm/profiles/simulation/cgroup.conf root slurm 0644
-install_asset config/slurmdbd.conf.template /etc/slurm/profiles/simulation/slurmdbd.conf.template root slurm 0644
-install_asset config/slurm.production.conf /etc/slurm/profiles/production/slurm.conf root slurm 0644
-install_asset config/cgroup.production.conf /etc/slurm/profiles/production/cgroup.conf root slurm 0644
-install_asset config/job_container.production.conf /etc/slurm/profiles/production/job_container.conf root slurm 0644
-install_asset config/slurmdbd.production.conf.template /etc/slurm/profiles/production/slurmdbd.conf.template root slurm 0644
+    /usr/local/libexec/slurm /finsim-app /finsim-data /finsim-credentials
+install -d -o developer -g developer -m 0750 /home/developer
 
 install_asset scripts/cluster-entrypoint.sh /usr/local/sbin/cluster-entrypoint root root 0755
 install_asset scripts/cluster-healthcheck.sh /usr/local/sbin/cluster-healthcheck root root 0755
@@ -168,19 +158,14 @@ install_asset deploy/lifecycle/lifecycle-common.sh /usr/local/libexec/slurm/life
 install_asset deploy/lifecycle/slurm-resume-program /usr/local/libexec/slurm/slurm-resume-program root root 0755
 install_asset deploy/lifecycle/slurm-suspend-program /usr/local/libexec/slurm/slurm-suspend-program root root 0755
 
-install_compatibility_symlink profiles/simulation/slurm.conf /etc/slurm/slurm.conf
-install_compatibility_symlink profiles/simulation/cgroup.conf /etc/slurm/cgroup.conf
-
 for identity in munge:64029:64029 slurm:64030:64030 \
-        slurmrestd:64031:64031 finsim:64032:64032; do
+        slurmrestd:64031:64031 finsim:64032:64032 developer:1000:1000; do
     IFS=: read -r name uid gid <<<"$identity"
     [[ $(id -u "$name") == "$uid" && $(id -g "$name") == "$gid" ]] ||
         build_die "runtime identity verification failed for $name"
 done
-if ((integration_database == 1)); then
-    [[ $(id -u mysql) == 27 && $(id -g mysql) == 27 ]] ||
-        build_die 'integration database identity must be mysql uid/gid 27'
-fi
+[[ $(id -u mysql) == 27 && $(id -g mysql) == 27 ]] ||
+    build_die 'runtime database identity must be mysql uid/gid 27'
 
 for plugin in auth_jwt rest_auth_jwt rest_auth_local data_parser_v0_0_45 \
         cgroup_v2 task_cgroup namespace_tmpfs tls_s2n \

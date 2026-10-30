@@ -188,13 +188,14 @@ public sealed class BatchRunner(
             ["FINSIM_CACHE_URL"] = settings.CacheUrl.ToString(),
             ["FINSIM_CACHE_TOKEN_FILE"] = settings.CacheTokenFile,
             ["FINSIM_CACHE_ALLOW_INSECURE_HTTP"] = settings.CacheAllowInsecureHttp ? "1" : "0",
-            ["FINSIM_DATA_ROOT"] = settings.DataRoot
+            ["FINSIM_DATA_ROOT"] = settings.DataRoot,
+            ["FINSIM_APPLICATION_EXECUTABLE"] = settings.ApplicationExecutable
         };
         var environmentArray = new JsonArray(
             environment.Select(pair => JsonValue.Create($"{pair.Key}={pair.Value}")).ToArray());
         return new JsonObject
         {
-            ["script"] = "#!/bin/bash\nset -Eeuo pipefail\numask 077\nexec /opt/finsim/FinSim/FinSim worker\n",
+            ["script"] = "#!/bin/bash\nset -Eeuo pipefail\numask 077\nexec \"${FINSIM_APPLICATION_EXECUTABLE}\" worker\n",
             ["job"] = new JsonObject
             {
                 ["name"] = $"finsim-{settings.WorkflowId:N}"[..19] + "-w",

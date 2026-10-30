@@ -1,0 +1,29 @@
+# Render one copy per host. Values in @...@ are deployment-system inputs.
+[Unit]
+Description=FinSim @ROLE@ container
+After=network-online.target remote-fs.target
+Wants=network-online.target
+
+[Container]
+Image=@IMAGE_DIGEST@
+ContainerName=finsim-@ROLE@
+Environment=CONTAINER_ROLE=@ROLE@
+Environment=CLUSTER_DEPLOYMENT_PROFILE=production
+Environment=SLURM_CONF=/etc/finsim-cluster/slurm.conf
+EnvironmentFile=/etc/finsim/node.env
+Volume=/etc/finsim/config:/etc/finsim-cluster:ro,Z
+Volume=/etc/finsim/secrets:/run/secrets:ro,Z
+Volume=/run/finsim/credentials:/run/credentials:ro,Z
+Volume=/finsim-app:/finsim-app:ro,z
+Volume=/finsim-data:/finsim-data:z
+@ROLE_VOLUMES@
+ReadOnly=true
+@ROLE_SECURITY_OPTIONS@
+
+[Service]
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

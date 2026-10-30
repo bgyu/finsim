@@ -22,7 +22,7 @@ for command in python3 podman; do
     command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
 
-crypto_image=${FINSIM_CRYPTO_IMAGE:-localhost/finsim-slurm:${FINSIM_IMAGE_TAG:-latest}}
+crypto_image=${FINSIM_CRYPTO_IMAGE:-localhost/finsim-runtime:${FINSIM_IMAGE_TAG:-latest}}
 use_container_crypto=0
 if ! command -v openssl >/dev/null 2>&1; then
     podman image exists "$crypto_image" ||
@@ -105,10 +105,9 @@ mv -f -- "$temporary" "$container_secret_dir/cache-client.jwt"
 podman unshare chown 64032:64032 "$container_secret_dir/cache-client.jwt"
 podman unshare chmod 0400 "$container_secret_dir/cache-client.jwt"
 
-cat >"$runtime_dir/cluster.env" <<'EOF'
-FINSIM_IMAGE_TAG=latest
-FINSIM_PROXY_PORT=8088
-EOF
+printf 'FINSIM_IMAGE_TAG=%s\nFINSIM_APP_RELEASE=%s\nFINSIM_PROXY_PORT=%s\n' \
+    "${FINSIM_IMAGE_TAG:-latest}" "${FINSIM_APP_RELEASE:-dev}" \
+    "${FINSIM_PROXY_PORT:-8088}" >"$runtime_dir/cluster.env"
 chmod 0600 "$runtime_dir/cluster.env"
 
 printf 'Development credentials are ready in %s (values were not printed).\n' \
