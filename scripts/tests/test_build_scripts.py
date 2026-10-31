@@ -11,6 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON = ROOT / "scripts" / "lib" / "build-common.sh"
+RUNTIME_ENV = ROOT / "scripts" / "lib" / "runtime-env.sh"
 
 
 def run_bash(program: str) -> subprocess.CompletedProcess[str]:
@@ -25,6 +26,116 @@ def run_bash(program: str) -> subprocess.CompletedProcess[str]:
 
 
 class BuildScriptTests(unittest.TestCase):
+    def test_runtime_environment_is_parsed_as_data(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            environment = root / "cluster.env"
+            environment.write_text(
+                "FINSIM_IMAGE_TAG=review\n"
+                "FINSIM_APP_RELEASE=2026.10.31.1\n"
+                "FINSIM_PROXY_PORT=18088\n",
+                encoding="ascii",
+            )
+            environment.chmod(0o600)
+            result = run_bash(
+                f"source {RUNTIME_ENV!s}; runtime_env_load {environment!s}; "
+                "printf '%s|%s|%s\\n' \"$FINSIM_IMAGE_TAG\" "
+                "\"$FINSIM_APP_RELEASE\" \"$FINSIM_PROXY_PORT\""
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), "review|2026.10.31.1|18088")
+
+    def test_runtime_environment_rejects_shell_syntax_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            marker = root / "executed"
+            environment = root / "cluster.env"
+            environment.write_text(
+                f"FINSIM_IMAGE_TAG=$(touch${{IFS}}{marker})\n"
+                "FINSIM_APP_RELEASE=dev\n"
+                "FINSIM_PROXY_PORT=8088\n",
+                encoding="ascii",
+            )
+            environment.chmod(0o600)
+            result = run_bash(
+                f"source {RUNTIME_ENV!s}; runtime_env_load {environment!s}"
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(marker.exists())
+
+    def test_runtime_environment_rejects_duplicate_or_unknown_keys(self) -> None:
+        for invalid_line in ("FINSIM_IMAGE_TAG=again", "UNEXPECTED=value"):
+            with self.subTest(invalid_line=invalid_line), tempfile.TemporaryDirectory(
+                dir="/tmp"
+            ) as temporary:
+                environment = Path(temporary) / "cluster.env"
+                environment.write_text(
+                    "FINSIM_IMAGE_TAG=review\n"
+                    "FINSIM_APP_RELEASE=dev\n"
+                    "FINSIM_PROXY_PORT=8088\n"
+                    f"{invalid_line}\n",
+                    encoding="ascii",
+                )
+                environment.chmod(0o600)
+                result = run_bash(
+                    f"source {RUNTIME_ENV!s}; runtime_env_load {environment!s}"
+                )
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_production_units_are_role_filtered_and_digest_pinned(self) -> None:
+        digest = "registry.example.invalid/finsim/runtime@sha256:" + "a" * 64
+        roles = (
+            "database",
+            "slurmdbd",
+            "controller",
+            "restd",
+            "compute-master",
+            "compute-worker",
+            "proxy",
+            "cache",
+        )
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            for role in roles:
+                instance = role.replace("-", "") + "01"
+                command = [
+                    "bash",
+                    str(ROOT / "scripts" / "render-production-unit.sh"),
+                    "--role",
+                    role,
+                    "--instance",
+                    instance,
+                    "--image",
+                    digest,
+                    "--network",
+                    "finsim-routable",
+                    "--output-dir",
+                    temporary,
+                ]
+                if role in {"proxy", "cache"}:
+                    command.extend(["--app-release", "2026.10.31.1"])
+                rendered = subprocess.run(
+                    command,
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(rendered.returncode, 0, rendered.stderr)
+                unit = Path(temporary) / f"finsim-{instance}.container"
+                validated = subprocess.run(
+                    ["bash", str(ROOT / "scripts" / "validate-production-unit.sh"), str(unit)],
+                    cwd=ROOT,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertEqual(validated.returncode, 0, validated.stderr)
+                text = unit.read_text(encoding="utf-8")
+                self.assertNotIn("Volume=/etc/finsim/secrets:/run/secrets", text)
+                self.assertNotIn("SYS_ADMIN", text)
+
     def test_pinned_version_file_is_parsed_as_data(self) -> None:
         result = run_bash(
             f"source {COMMON!s}; "

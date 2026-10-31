@@ -35,6 +35,14 @@ usage_error() {
 
 stop_children() {
     trap - TERM INT EXIT
+    if [[ ${role:-} == database && -S /run/mariadb/mariadb.sock ]]; then
+        # mariadbd may take longer to react when only its supervising shell
+        # receives SIGTERM. Ask it to flush and stop over the local socket
+        # before the generic child signal so Podman never needs SIGKILL during
+        # a normal database maintenance cycle.
+        timeout 30 mariadb-admin --protocol=socket \
+            --socket=/run/mariadb/mariadb.sock shutdown >/dev/null 2>&1 || true
+    fi
     if ((${#child_pids[@]})); then
         kill -TERM "${child_pids[@]}" 2>/dev/null || true
         wait "${child_pids[@]}" 2>/dev/null || true
@@ -688,6 +696,7 @@ require_production_compute_isolation() {
 
 run_compute() {
     local feature=${SLURMD_FEATURE:-} conf_server=${SLURM_CONF_SERVER:-}
+    local registration_mode=${SLURMD_REGISTRATION_MODE:-dynamic}
     local simulation_node_conf
     prepare_slurm_config
     prepare_munge
@@ -703,14 +712,23 @@ run_compute() {
         install -d -o root -g root -m 0755 /var/lib/slurm/job_container
     fi
 
-    if [[ -n $feature || -n $conf_server ]]; then
+    [[ $registration_mode =~ ^(dynamic|future|static)$ ]] ||
+        usage_error 'SLURMD_REGISTRATION_MODE must be dynamic, future, or static'
+    if [[ $registration_mode == dynamic || $registration_mode == future ]]; then
         [[ -n $feature && -n $conf_server ]] ||
-            die 'SLURMD_FEATURE and SLURM_CONF_SERVER must be set together'
+            die 'dynamic/future registration requires SLURMD_FEATURE and SLURM_CONF_SERVER'
         [[ $feature =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] ||
             usage_error 'SLURMD_FEATURE must be one literal feature name'
-        [[ $conf_server =~ ^[A-Za-z0-9_.:-]+(,[A-Za-z0-9_.:-]+)*$ ]] ||
-            usage_error 'SLURM_CONF_SERVER must be a comma-separated controller list'
-        if [[ $profile == simulation ]]; then
+    else
+        [[ -z $feature && -n $conf_server ]] ||
+            die 'static registration requires SLURM_CONF_SERVER and no SLURMD_FEATURE'
+    fi
+    [[ $conf_server =~ ^[A-Za-z0-9_.:-]+(,[A-Za-z0-9_.:-]+)*$ ]] ||
+        usage_error 'SLURM_CONF_SERVER must be a comma-separated controller list'
+
+    case $registration_mode in
+        dynamic)
+            if [[ $profile == simulation ]]; then
             # A rootless container sees the WSL VM's physical topology;
             # Podman's CPU quota does not change `slurmd -C`. Dynamic-normal
             # registration gives the integration profile a deterministic
@@ -719,14 +737,26 @@ run_compute() {
             log "starting dynamic simulation slurmd for $(hostname -s), profile $feature"
             slurmd -D -v --conf-server "$conf_server" -Z \
                 --conf "$simulation_node_conf" &
-        else
+            else
+                # Production dynamic registration reports physical resources
+                # and adds only the scheduling feature. No FUTURE node template
+                # is required, so nodes can be added and deleted at runtime.
+                log "starting dynamic production slurmd for $(hostname -s), profile $feature"
+                slurmd -D -v --conf-server "$conf_server" -Z \
+                    --conf "Feature=$feature" &
+            fi
+            ;;
+        future)
+            [[ $profile == production ]] ||
+                die 'FUTURE registration is supported only in production'
             log "starting dynamic FUTURE slurmd for $(hostname -s), profile $feature"
             slurmd -D -v --conf-server "$conf_server" "-F${feature}" &
-        fi
-    else
-        log "starting statically named slurmd for $(hostname -s)"
-        slurmd -D -v &
-    fi
+            ;;
+        static)
+            log "starting predeclared slurmd for $(hostname -s)"
+            slurmd -D -v --conf-server "$conf_server" &
+            ;;
+    esac
     child_pids+=("$!")
 }
 
@@ -789,6 +819,38 @@ run_token_agent() {
     child_pids+=("$!")
 }
 
+prepare_application_tls() {
+    [[ $profile == production ]] || return 0
+
+    local ca=${APPLICATION_TLS_CA_FILE:-}
+    local cert=${APPLICATION_TLS_CERT_FILE:-}
+    local key=${APPLICATION_TLS_KEY_FILE:-}
+    [[ -n $ca && -n $cert && -n $key ]] ||
+        die 'production applications require APPLICATION_TLS_CA_FILE, APPLICATION_TLS_CERT_FILE, and APPLICATION_TLS_KEY_FILE'
+    [[ ${ASPNETCORE_URLS:-} =~ ^https://0\.0\.0\.0:[0-9]{1,5}$ ]] ||
+        die 'production applications must listen on an explicit https://0.0.0.0:PORT endpoint'
+    validate_input_file "$ca" 'application service CA bundle' public
+    validate_input_file "$cert" 'application TLS certificate' public
+    # Application roles intentionally keep only SETUID/SETGID. Mount the key
+    # read-only as root:finsim 0440 so Kestrel can consume it directly without
+    # granting the bootstrap process CHOWN, DAC_OVERRIDE, FOWNER or KILL.
+    [[ $key == /* && -f $key && ! -L $key ]] ||
+        die 'application TLS private key must be an absolute, non-symlink regular file'
+    [[ $(stat --format='%u:%g:%a' -- "$key") == 0:64032:440 ]] ||
+        die 'application TLS private key must be owned by root:finsim with mode 0440'
+    openssl x509 -in "$cert" -noout -checkend 86400 >/dev/null 2>&1 ||
+        die 'application TLS certificate is invalid or expires within 24 hours'
+    openssl pkey -in "$key" -noout >/dev/null 2>&1 ||
+        die 'application TLS private key is invalid or encrypted'
+    [[ $(openssl x509 -in "$cert" -pubkey -noout | sha256sum) == \
+       $(openssl pkey -in "$key" -pubout 2>/dev/null | sha256sum) ]] ||
+        die 'application TLS certificate does not match its private key'
+
+    export SSL_CERT_FILE=$ca
+    export ASPNETCORE_Kestrel__Certificates__Default__Path=$cert
+    export ASPNETCORE_Kestrel__Certificates__Default__KeyPath=$key
+}
+
 run_application() {
     (($#)) || usage_error 'application role requires an executable and optional arguments'
     local executable=$1
@@ -799,9 +861,9 @@ run_application() {
     local mode
     mode=$(stat --format='%a' -- "$executable")
     (((8#$mode & 0022) == 0)) || die 'application executable must not be group/world writable'
-    log "starting application as uid 64032 from immutable release"
-    runuser --user finsim -- "$@" &
-    child_pids+=("$!")
+    prepare_application_tls
+    log "replacing bootstrap process with application uid 64032 from immutable release"
+    exec setpriv --reuid=finsim --regid=finsim --init-groups --no-new-privs "$@"
 }
 
 wait_for_essential_process() {

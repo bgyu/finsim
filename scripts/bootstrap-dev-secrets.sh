@@ -9,6 +9,9 @@ runtime_dir="$project_dir/.runtime"
 secret_dir="$runtime_dir/secrets"
 public_dir="$runtime_dir/public"
 container_secret_dir="$runtime_dir/container-secrets"
+image_tag=${FINSIM_IMAGE_TAG:-latest}
+app_release=${FINSIM_APP_RELEASE:-dev}
+proxy_port=${FINSIM_PROXY_PORT:-8088}
 
 install -d -m 0700 "$runtime_dir" "$secret_dir" "$container_secret_dir"
 install -d -m 0755 "$public_dir"
@@ -22,7 +25,15 @@ for command in python3 podman; do
     command -v "$command" >/dev/null 2>&1 || die "$command is required"
 done
 
-crypto_image=${FINSIM_CRYPTO_IMAGE:-localhost/finsim-runtime:${FINSIM_IMAGE_TAG:-latest}}
+[[ $image_tag =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$ ]] ||
+    die 'FINSIM_IMAGE_TAG is invalid'
+[[ $app_release =~ ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$ ]] ||
+    die 'FINSIM_APP_RELEASE is invalid'
+[[ $proxy_port =~ ^[0-9]{1,5}$ ]] &&
+    ((10#$proxy_port >= 1 && 10#$proxy_port <= 65535)) ||
+    die 'FINSIM_PROXY_PORT must be between 1 and 65535'
+
+crypto_image=${FINSIM_CRYPTO_IMAGE:-localhost/finsim-runtime:$image_tag}
 use_container_crypto=0
 if ! command -v openssl >/dev/null 2>&1; then
     podman image exists "$crypto_image" ||
@@ -106,8 +117,7 @@ podman unshare chown 64032:64032 "$container_secret_dir/cache-client.jwt"
 podman unshare chmod 0400 "$container_secret_dir/cache-client.jwt"
 
 printf 'FINSIM_IMAGE_TAG=%s\nFINSIM_APP_RELEASE=%s\nFINSIM_PROXY_PORT=%s\n' \
-    "${FINSIM_IMAGE_TAG:-latest}" "${FINSIM_APP_RELEASE:-dev}" \
-    "${FINSIM_PROXY_PORT:-8088}" >"$runtime_dir/cluster.env"
+    "$image_tag" "$app_release" "$proxy_port" >"$runtime_dir/cluster.env"
 chmod 0600 "$runtime_dir/cluster.env"
 
 printf 'Development credentials are ready in %s (values were not printed).\n' \

@@ -22,6 +22,18 @@ verify() {
         exit 1
     fi
 
+    (
+        production_config=$(mktemp -d /tmp/finsim-production-config.XXXXXXXX)
+        trap 'rm -rf -- "$production_config"' EXIT
+        env FINSIM_CONTROLLER_PRIMARY=controller-primary \
+            FINSIM_CONTROLLER_BACKUP=controller-backup \
+            FINSIM_SLURMDBD_PRIMARY=slurmdbd-primary \
+            FINSIM_SLURMDBD_BACKUP=slurmdbd-backup \
+            scripts/prepare-config.sh --profile production \
+                --output-dir "$production_config"
+        scripts/validate-production-config.sh "$production_config"
+    )
+
     FINSIM_IMAGE_TAG=$image_tag scripts/build-images.sh
 }
 

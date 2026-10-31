@@ -191,6 +191,11 @@ public sealed class BatchRunner(
             ["FINSIM_DATA_ROOT"] = settings.DataRoot,
             ["FINSIM_APPLICATION_EXECUTABLE"] = settings.ApplicationExecutable
         };
+        if (settings.ServiceCaFile is not null)
+        {
+            environment["FINSIM_SERVICE_CA_FILE"] = settings.ServiceCaFile;
+            environment["SSL_CERT_FILE"] = settings.ServiceCaFile;
+        }
         var environmentArray = new JsonArray(
             environment.Select(pair => JsonValue.Create($"{pair.Key}={pair.Value}")).ToArray());
         return new JsonObject

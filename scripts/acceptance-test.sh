@@ -19,7 +19,8 @@ done
 
 [[ -f .runtime/cluster.env ]] || fail 'run scripts/cluster-up.sh first'
 # shellcheck disable=SC1091
-source .runtime/cluster.env
+source scripts/lib/runtime-env.sh
+runtime_env_load .runtime/cluster.env || fail 'invalid local runtime environment'
 
 # Prevent an accidental regression to shelling out from application code.
 if rg -n '\b(sbatch|squeue|sacct|scancel|scontrol)\b' src; then

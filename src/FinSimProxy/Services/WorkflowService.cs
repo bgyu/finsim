@@ -28,6 +28,7 @@ public sealed partial class WorkflowService
     private readonly string workerFeature;
     private readonly string dataRoot;
     private readonly string applicationExecutable;
+    private readonly string? serviceCaFile;
     private readonly bool allowInsecureSlurm;
 
     public WorkflowService(
@@ -60,6 +61,18 @@ public sealed partial class WorkflowService
         {
             throw new InvalidOperationException(
                 "The application executable must be an existing immutable release path.");
+        }
+        serviceCaFile = configuration["Jobs:ServiceCaFile"];
+        if (!allowInsecureCache || !allowInsecureSlurm)
+        {
+            if (string.IsNullOrWhiteSpace(serviceCaFile) ||
+                !Path.IsPathFullyQualified(serviceCaFile) ||
+                !File.Exists(serviceCaFile) ||
+                new FileInfo(serviceCaFile).LinkTarget is not null)
+            {
+                throw new InvalidOperationException(
+                    "Jobs:ServiceCaFile must identify a mounted regular CA bundle for HTTPS jobs.");
+            }
         }
     }
 
@@ -251,7 +264,9 @@ public sealed partial class WorkflowService
             return Directory.Exists(dataRoot) &&
                    new DirectoryInfo(dataRoot).LinkTarget is null &&
                    File.Exists(applicationExecutable) &&
-                   new FileInfo(applicationExecutable).LinkTarget is null;
+                   new FileInfo(applicationExecutable).LinkTarget is null &&
+                   (serviceCaFile is null ||
+                    (File.Exists(serviceCaFile) && new FileInfo(serviceCaFile).LinkTarget is null));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
@@ -283,6 +298,11 @@ public sealed partial class WorkflowService
             ["FINSIM_WORKER_PARTITION"] = workerPartition,
             ["FINSIM_WORKER_FEATURE"] = workerFeature
         };
+        if (serviceCaFile is not null)
+        {
+            environment["FINSIM_SERVICE_CA_FILE"] = serviceCaFile;
+            environment["SSL_CERT_FILE"] = serviceCaFile;
+        }
         var environmentArray = new JsonArray(
             environment.Select(pair => JsonValue.Create($"{pair.Key}={pair.Value}")).ToArray());
         var name = $"finsim-{workflowId:N}"[..19] + "-m";

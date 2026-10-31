@@ -36,6 +36,7 @@ MaxStepCount=10000
 SchedulerType=sched/backfill
 SelectType=select/cons_tres
 SelectTypeParameters=CR_Core_Memory
+@POWER_SAVE_LINES@
 
 AccountingStorageType=accounting_storage/slurmdbd
 @ACCOUNTING_HOST_LINES@

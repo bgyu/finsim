@@ -1,28 +1,41 @@
-# Render one copy per host. Values in @...@ are deployment-system inputs.
+# Rendered only by scripts/render-production-unit.sh. Do not use envsubst:
+# each multiline value is selected from a role-specific allow-list.
 [Unit]
-Description=FinSim @ROLE@ container
+Description=FinSim @INSTANCE@ (@ROLE@) container
 After=network-online.target remote-fs.target
 Wants=network-online.target
 
 [Container]
-Image=@IMAGE_DIGEST@
-ContainerName=finsim-@ROLE@
-Environment=CONTAINER_ROLE=@ROLE@
+Image=@IMAGE@
+ContainerName=finsim-@INSTANCE@
+HostName=@INSTANCE@
+Environment=CONTAINER_ROLE=@CONTAINER_ROLE@
 Environment=CLUSTER_DEPLOYMENT_PROFILE=production
-Environment=SLURM_CONF=/etc/finsim-cluster/slurm.conf
-EnvironmentFile=/etc/finsim/node.env
-Volume=/etc/finsim/config:/etc/finsim-cluster:ro,Z
-Volume=/etc/finsim/secrets:/run/secrets:ro,Z
-Volume=/run/finsim/credentials:/run/credentials:ro,Z
-Volume=/finsim-app:/finsim-app:ro,z
-Volume=/finsim-data:/finsim-data:z
-@ROLE_VOLUMES@
+EnvironmentFile=/etc/finsim/roles/@INSTANCE@.env
+Network=@NETWORK@
+Pull=never
 ReadOnly=true
-@ROLE_SECURITY_OPTIONS@
+ReadOnlyTmpfs=true
+NoNewPrivileges=true
+DropCapability=all
+CgroupsMode=enabled
+LogDriver=journald
+HealthCmd=/usr/local/sbin/cluster-healthcheck
+HealthInterval=30s
+HealthTimeout=10s
+HealthRetries=3
+Notify=healthy
+PidsLimit=4096
+@ENVIRONMENT@
+@CAPABILITIES@
+@VOLUMES@
+@EXEC@
 
 [Service]
+Delegate=yes
 Restart=on-failure
 RestartSec=10
+TimeoutStartSec=900
 TimeoutStopSec=120
 
 [Install]

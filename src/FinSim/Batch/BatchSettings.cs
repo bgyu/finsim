@@ -7,6 +7,7 @@ public sealed record BatchSettings(
     bool CacheAllowInsecureHttp,
     string DataRoot,
     string ApplicationExecutable,
+    string? ServiceCaFile,
     Uri? SlurmUrl,
     string? SlurmTokenFile,
     bool SlurmAllowInsecureHttp,
@@ -27,6 +28,11 @@ public sealed record BatchSettings(
                 "FINSIM_APPLICATION_EXECUTABLE must identify an immutable release.");
         }
         var deadline = OptionalInt("FINSIM_DEADLINE_SECONDS", 600, 30, 86_400);
+        var serviceCaFile = Environment.GetEnvironmentVariable("FINSIM_SERVICE_CA_FILE");
+        if (!cacheAllowHttp)
+        {
+            serviceCaFile = RequiredRegularFile("FINSIM_SERVICE_CA_FILE");
+        }
 
         Uri? slurmUrl = null;
         string? slurmToken = null;
@@ -36,6 +42,10 @@ public sealed record BatchSettings(
             slurmAllowHttp = Flag("FINSIM_SLURM_ALLOW_INSECURE_HTTP");
             slurmUrl = RequiredUri("FINSIM_SLURM_REST_URL", slurmAllowHttp);
             slurmToken = Required("FINSIM_SLURM_TOKEN_FILE");
+            if (!slurmAllowHttp && serviceCaFile is null)
+            {
+                serviceCaFile = RequiredRegularFile("FINSIM_SERVICE_CA_FILE");
+            }
         }
 
         return new BatchSettings(
@@ -45,6 +55,7 @@ public sealed record BatchSettings(
             cacheAllowHttp,
             dataRoot,
             applicationExecutable,
+            serviceCaFile,
             slurmUrl,
             slurmToken,
             slurmAllowHttp,
@@ -60,6 +71,17 @@ public sealed record BatchSettings(
 
     private static bool Flag(string name) =>
         string.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal);
+
+    private static string RequiredRegularFile(string name)
+    {
+        var path = Path.GetFullPath(Required(name));
+        var information = new FileInfo(path);
+        if (!information.Exists || information.LinkTarget is not null)
+        {
+            throw new InvalidOperationException($"Setting {name} must identify a regular file.");
+        }
+        return path;
+    }
 
     private static Uri RequiredUri(string name, bool allowHttp)
     {

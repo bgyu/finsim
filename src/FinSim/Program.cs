@@ -12,6 +12,12 @@ try
 {
     var master = args[0] == "master";
     var settings = BatchSettings.FromEnvironment(requireSlurm: master);
+    if (settings.ServiceCaFile is not null)
+    {
+        // .NET on Linux asks OpenSSL for its trust store. Propagate the
+        // deployment-projected bundle before the first HTTPS connection.
+        Environment.SetEnvironmentVariable("SSL_CERT_FILE", settings.ServiceCaFile);
+    }
     using var cacheHttp = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
     var cache = new HttpKeyValueStore(
         cacheHttp,

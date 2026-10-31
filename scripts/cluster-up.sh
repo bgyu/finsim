@@ -6,7 +6,8 @@ cd "$project_dir"
 command -v podman >/dev/null || { printf 'cluster-up: podman is required\n' >&2; exit 127; }
 scripts/validate-deployment.sh
 # shellcheck disable=SC1091
-source .runtime/cluster.env
+source scripts/lib/runtime-env.sh
+runtime_env_load .runtime/cluster.env
 podman image exists "localhost/finsim-runtime:${FINSIM_IMAGE_TAG:-latest}" || {
     printf 'cluster-up: runtime image is missing; run scripts/build-images.sh\n' >&2; exit 78;
 }

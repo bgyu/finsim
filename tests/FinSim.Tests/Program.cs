@@ -165,6 +165,7 @@ try
         "/finsim-app/releases/test/FinSim/FinSim",
         null,
         null,
+        null,
         false,
         30);
     var workerExit = await new BatchRunner(workerSettings, store)
@@ -228,6 +229,7 @@ try
         false,
         Path.Combine(temporaryRoot, "master-data"),
         "/finsim-app/releases/test/FinSim/FinSim",
+        null,
         new Uri("https://slurm.test/"),
         tokenFile,
         false,
