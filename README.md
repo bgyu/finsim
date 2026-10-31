@@ -5,6 +5,12 @@ Slurm. The calculation is deliberately small; the production artifact is the
 operational contract shared by a five-node Podman development cluster and a
 distributed cluster with more than 2,000 compute hosts.
 
+Start with the complete [repository user guide](docs/USER_GUIDE.md). It covers
+host prerequisites, RPM/image/application compilation, local development,
+TeamCity, production deployment, node scaling, upgrades and recovery. The
+[implementation review](docs/REVIEW.md) records corrected issues and remaining
+production responsibilities.
+
 ## Images
 
 Only two images are published:
@@ -34,6 +40,10 @@ scripts/cluster-up.sh
 # 4. Exercise the REST-only workflow and security/accounting checks.
 scripts/submit-simulation.sh --wait
 scripts/acceptance-test.sh
+
+# Optional: add and safely remove another dynamic local worker.
+scripts/local-node.sh add compute-host-006 worker
+scripts/local-node.sh remove compute-host-006 900
 
 # 5. Stop containers without deleting persistent state or releases.
 scripts/cluster-down.sh
@@ -77,6 +87,8 @@ acceptance test enforce this boundary.
 ## Documentation
 
 - [Architecture and implementation](docs/ARCHITECTURE.md)
+- [Complete build, deployment and operations guide](docs/USER_GUIDE.md)
+- [Implementation review and production cautions](docs/REVIEW.md)
 - [Local operations](docs/OPERATIONS.md)
 - [Production deployment](docs/PRODUCTION.md)
 - [Dependency provenance](docs/DEPENDENCIES.md)

@@ -46,6 +46,12 @@ with the controller list and use configless Slurm. Production rendering
 requires primary/backup controller and slurmdbd names and defaults to capacity
 for 4,096 nodes.
 
+Compute registration is explicit. `dynamic` uses supported `slurmd -Z`
+self-registration, `future` matches predeclared FUTURE nodes, and `static`
+matches precreated static or cloud inventory. The default production unit
+example is dynamic; Slurm-driven power saving normally combines precreated
+cloud inventory, static registration and the external lifecycle service.
+
 `publish-app.sh` runs restore, Release build, managed tests and three publishes
 inside `finsim-dev`. It creates a checksum manifest, makes the release
 root-owned and non-writable in the container namespace, atomically installs it
@@ -57,6 +63,24 @@ MariaDB, controller and per-node Slurmd state are separate mounts. Application
 release storage is read-only to services. Workflow data is writable only to
 the FinSim identity. Long-lived secrets are read-only role-filtered mounts;
 short-lived tokens use `/run/credentials`.
+
+Production application roles fail closed unless Kestrel receives a validated
+PEM certificate/key and an explicit `https://0.0.0.0:PORT` listener. The key is
+a role-filtered, read-only root:finsim 0440 mount, after which the bootstrap
+process replaces itself with UID 64032. A public service CA bundle is
+mounted at the same path on proxy and compute roles; the proxy places that path
+in the master environment and the master propagates it to workers so .NET can
+validate cache and Slurm REST certificates without disabling verification.
+
+Production Quadlets are generated with `render-production-unit.sh`. The
+renderer requires a digest-pinned image and a deployment-provided routable
+network, mounts secrets individually, drops the default capability set and
+does not grant `SYS_ADMIN`, host networking or a host user namespace. Its
+offline validator checks those invariants before target-host Quadlet parsing.
+
+FinSimCache and the repository MariaDB role make integration testable; a large
+production deployment normally replaces them with separately operated HA data
+services. The interface and mount/credential contracts remain the same.
 
 The complete rationale and verification gates are in the approved design in
 `docs/plans/2026-10-30-two-image-production-parity-design.md`.

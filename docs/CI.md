@@ -9,8 +9,9 @@ scripts/ci.sh integration
 ```
 
 `verify` checks shell/Python code and builds the two image targets. The dev
-target supplies the SDK and tests; the runtime target is the only production
-artifact. `integration` prepares an immutable application release, starts the
+target supplies the SDK and tests; it also renders and validates production
+configuration and every role-filtered unit. The runtime target is the only
+production image artifact. `integration` prepares an immutable application release, starts the
 same runtime digest in the local topology, submits a REST workflow and runs the
 acceptance/security/accounting suite.
 
@@ -23,3 +24,8 @@ Required gates are locked restore, warnings-as-errors build, managed contract
 tests, shell/Python tests, Compose rendering, role startup, REST submission,
 non-root payload proof, accounting proof, credential mount isolation and
 runtime-image content checks.
+
+Use a unique `BUILD_TAG`, archive the RPM `BUILD-MANIFEST`, image digest,
+application release manifest, generated configuration manifest, SBOM,
+provenance and signatures as separate build artifacts. A production promotion
+references those exact artifacts and does not rebuild them.
