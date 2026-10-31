@@ -88,6 +88,7 @@ acceptance test enforce this boundary.
 
 - [Architecture and implementation](docs/ARCHITECTURE.md)
 - [Complete build, deployment and operations guide](docs/USER_GUIDE.md)
+- [Exhaustive script reference](docs/SCRIPTS.md)
 - [Implementation review and production cautions](docs/REVIEW.md)
 - [Local operations](docs/OPERATIONS.md)
 - [Production deployment](docs/PRODUCTION.md)

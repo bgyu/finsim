@@ -3,7 +3,9 @@
 This guide is the task-oriented manual for compiling, testing, deploying and
 operating FinSim. Read [ARCHITECTURE.md](ARCHITECTURE.md) for component design,
 [DEPENDENCIES.md](DEPENDENCIES.md) for package provenance and
-[REVIEW.md](REVIEW.md) for reviewed limitations and production cautions.
+[REVIEW.md](REVIEW.md) for reviewed limitations and production cautions. The
+[exhaustive script reference](SCRIPTS.md) documents every script, its examples,
+dependencies, sourced functions and shared variables.
 
 ## 1. What this repository provides
 
