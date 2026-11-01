@@ -304,7 +304,8 @@ Syntax:
 
 ```bash
 scripts/prepare-config.sh \
-  [--profile simulation|production] [--output-dir DIRECTORY]
+  [--profile simulation|production] [--output-dir DIRECTORY] \
+  [--cloud-inventory FILE]
 ```
 
 Simulation defaults include one controller/database endpoint, HS256 Slurm JWT,
@@ -321,13 +322,16 @@ Important variables:
   `FINSIM_SLURMDBD_BACKUP`;
 - lifecycle: `FINSIM_LIFECYCLE_ENABLE`, `FINSIM_LIFECYCLE_API_URL`,
   `FINSIM_RESUME_TIMEOUT`, `FINSIM_SUSPEND_TIMEOUT`, `FINSIM_SUSPEND_TIME`,
-  `FINSIM_RESUME_RATE`, and `FINSIM_SUSPEND_RATE`.
+  `FINSIM_RESUME_RATE`, and `FINSIM_SUSPEND_RATE`;
+- inventory: `FINSIM_CLOUD_INVENTORY_FILE` or `--cloud-inventory`, production
+  only. The owner-controlled input accepts bounded `State=CLOUD` `NodeName`
+  records for `finsim-master` and `finsim-worker`; lifecycle requires it.
 
 Template dependencies are `config/slurm.conf.in`, `config/cgroup.conf.in`,
 `config/slurmdbd.conf.template`, `config/job_container.conf`, and
 `config/mariadb-server.cnf.in`. Outputs include the rendered files,
-`generated-manifest.json`, and optional `lifecycle-client.conf`. No other
-script is called or sourced.
+`generated-manifest.json`, optional `cloud-nodes.conf`, and optional
+`lifecycle-client.conf`. No other script is called or sourced.
 
 Example:
 
@@ -337,6 +341,7 @@ FINSIM_CONTROLLER_BACKUP=controller-b.internal \
 FINSIM_SLURMDBD_PRIMARY=slurmdbd-a.internal \
 FINSIM_SLURMDBD_BACKUP=slurmdbd-b.internal \
 scripts/prepare-config.sh --profile production \
+  --cloud-inventory deploy/cloud-nodes.conf.example \
   --output-dir /tmp/finsim-production-config
 ```
 
@@ -586,6 +591,10 @@ Function groups:
   `register_simulation_accounting`;
 - production compute isolation: `require_production_compute_isolation`.
 
+The production isolation function requires non-remapped root, unified cgroup
+v2, the host cgroup namespace and the current service's writable delegated
+cgroup. It creates and removes a probe child cgroup before `slurmd` starts.
+
 Important role variables include `SLURM_CONFIG_FILE`,
 `SLURM_CGROUP_CONFIG_FILE`, `SLURM_JOB_CONTAINER_CONFIG_FILE`,
 `SLURM_JWT_KEY_FILE`, `SLURM_JWKS_FILE`, `SLURM_TLS_*`,
@@ -611,7 +620,9 @@ The caller sets `CONTAINER_ROLE` and `CLUSTER_DEPLOYMENT_PROFILE`. Checks are:
 - compute: root `slurmd` plus a registered non-FUTURE/non-UNKNOWN host record;
 - restd: slurmrestd UID process and its configured listener port;
 - token-agent: renewer process and recent non-empty token file;
-- application: a process owned by UID 64032.
+- application: a process owned by UID 64032. Generated production proxy/cache
+  units replace this fallback with bounded HTTPS readiness using the public
+  service CA.
 
 Compose and generated Quadlets call the installed
 `/usr/local/sbin/cluster-healthcheck`; operators normally use `podman
@@ -733,6 +744,12 @@ functions `add_slurm_config`, `add_munge_socket`, `add_control_tls`, `add_jwks`,
 `add_application_tls`, and `add_service_caps` assemble allow-listed role
 fragments; `join_lines` passes them to the strict Python marker replacement.
 
+Compute roles deliberately render a trusted dedicated-host profile using
+privileged Podman, the host cgroup namespace and the host cgroup v2 mount.
+Every other role renders `NoNewPrivileges=true`, drops all defaults and adds
+only its allow-listed capabilities. Proxy/cache health commands call the
+role's HTTPS readiness endpoint with the public service CA.
+
 Outputs are `finsim-<instance>.container` and
 `finsim-<instance>.env.example`. Secrets are referenced as individual
 target-host mounts, never copied to output. The renderer rejects host network,
@@ -749,9 +766,10 @@ scripts/validate-production-config.sh /etc/finsim/config
 ```
 
 It verifies required files, production schema/profile, exact manifest file set
-and hashes, safe modes, two controllers, JWT hardening, Slurm TLS, cgroup
-constraints, private data, MariaDB secure transport, lifecycle pairing and no
-unexpected unresolved template markers. Storage placeholders in the private
+and hashes, safe modes, two controllers, complete JWT client identity policy,
+Slurm TLS, cgroup constraints, private data, MariaDB secure transport,
+lifecycle/inventory pairing and independently parsed cloud records. Storage
+placeholders in the private
 slurmdbd template are intentionally allowed because the entrypoint fills them
 from role credentials at runtime. It calls no other repository script.
 
@@ -767,11 +785,11 @@ scripts/validate-production-unit.sh \
 ```
 
 Common checks enforce digest pinning, a named network, read-only rootfs,
-no-new-privileges, dropped default capabilities, cgroup delegation, resolved
-markers, no host networking/user namespace, no `SYS_ADMIN`/privileged mode and
-no whole-secret-directory mount. Role checks enforce the exact database, JWKS,
-MUNGE, bearer-token, CA and application TLS boundaries. It calls no repository
-script and changes no state.
+cgroup delegation, resolved markers and no whole-secret-directory mount.
+Non-compute roles require no-new-privileges, dropped defaults and no trusted
+host settings. Compute roles require privileged Podman, host cgroup namespace
+and mount while rejecting control-plane secrets. Application roles require an
+HTTPS readiness command. It calls no repository script and changes no state.
 
 ## 9. CI and test scripts
 
@@ -802,20 +820,24 @@ preparation. `BUILD_TAG` is restricted to a safe image/release alphabet.
 Purpose: fast unit/contract tests for build and deployment glue. It is invoked
 by `ci.sh` and `acceptance-test.sh`, not production runtime code.
 
-The 12 tests cover:
+The 15 tests cover:
 
 1. valid local runtime-environment parsing;
 2. rejection of shell syntax without execution;
 3. duplicate/unknown local settings;
-4. role-filtered digest-pinned production units and their validator;
-5. approved version-file parsing;
-6. rejection of executable version-file content;
-7. exact RPM manifest file sets;
-8. source-pin matching;
-9. paired source override requirements;
-10. Containerfile delegation to the three public build phases;
-11. Containerfile/version default agreement;
-12. proof that runtime configuration does not generate secret material.
+4. role-filtered digest-pinned production units, trusted compute isolation and
+   HTTPS application readiness;
+5. valid lifecycle inventory rendering, manifesting and tamper rejection;
+6. rejection of lifecycle automation without cloud inventory;
+7. rejection of unsafe, symlinked or invalid cloud inventory;
+8. approved version-file parsing;
+9. rejection of executable version-file content;
+10. exact RPM manifest file sets;
+11. source-pin matching;
+12. paired source override requirements;
+13. Containerfile delegation to the three public build phases;
+14. Containerfile/version default agreement;
+15. proof that runtime configuration does not generate secret material.
 
 The module references `scripts/lib/build-common.sh`,
 `scripts/lib/runtime-env.sh`, `build-rpms.sh`, `configure-runtime.sh`,
@@ -923,6 +945,7 @@ SLURM_LIFECYCLE_CONFIG=/etc/finsim/config/lifecycle-client.conf \
 |---|---|---|
 | `FINSIM_IMAGE_TAG`, `FINSIM_APP_RELEASE`, `FINSIM_PROXY_PORT` | developer/CI; persisted by bootstrap | local orchestration and Compose |
 | production endpoint/capacity `FINSIM_*` | deployment renderer invocation | `prepare-config.sh` |
+| `FINSIM_CLOUD_INVENTORY_FILE` | deployment renderer invocation | production scheduler inventory |
 | `CONTAINER_ROLE`, `CLUSTER_DEPLOYMENT_PROFILE` | Compose/Quadlet | entrypoint and healthcheck |
 | `SLURM_*`, `SLURMD_*`, `SLURMDBD_*` role settings | Compose/Quadlet environment | entrypoint role branches |
 | `APPLICATION_TLS_*` | production unit renderer | application entrypoint validation |

@@ -1,0 +1,4 @@
+# Example scheduler-visible inventory for Slurm-driven scale from zero.
+# Keep the expanded total below MaxNodeCount and benchmark the chosen sizes.
+NodeName=finsim-master[0001-0016] CPUs=4 RealMemory=8192 Feature=finsim-master State=CLOUD
+NodeName=finsim-worker[0001-3000] CPUs=8 RealMemory=16384 Feature=finsim-worker State=CLOUD

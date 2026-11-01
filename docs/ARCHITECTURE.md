@@ -49,8 +49,10 @@ for 4,096 nodes.
 Compute registration is explicit. `dynamic` uses supported `slurmd -Z`
 self-registration, `future` matches predeclared FUTURE nodes, and `static`
 matches precreated static or cloud inventory. The default production unit
-example is dynamic; Slurm-driven power saving normally combines precreated
-cloud inventory, static registration and the external lifecycle service.
+example is dynamic. Slurm-driven power saving requires the validated
+`cloud-nodes.conf` input, static registration and the external lifecycle
+service; lifecycle rendering fails when the scheduler-visible inventory is
+absent.
 
 `publish-app.sh` runs restore, Release build, managed tests and three publishes
 inside `finsim-dev`. It creates a checksum manifest, makes the release
@@ -74,9 +76,15 @@ validate cache and Slurm REST certificates without disabling verification.
 
 Production Quadlets are generated with `render-production-unit.sh`. The
 renderer requires a digest-pinned image and a deployment-provided routable
-network, mounts secrets individually, drops the default capability set and
-does not grant `SYS_ADMIN`, host networking or a host user namespace. Its
-offline validator checks those invariants before target-host Quadlet parsing.
+network and mounts secrets individually. Database, accounting, controller,
+REST and application roles drop the default capability set and prohibit host
+namespaces and privileged mode. Compute roles are different: root `slurmd` is
+an explicit trusted host agent using privileged Podman, the host cgroup
+namespace and the host cgroup v2 hierarchy on a dedicated node. Their
+read-only image/application mounts and secret filtering remain enforced, but a
+compute compromise is a host compromise. The offline validator prevents this
+profile from leaking to another role and target-host acceptance proves job
+cgroups and namespace isolation before promotion.
 
 FinSimCache and the repository MariaDB role make integration testable; a large
 production deployment normally replaces them with separately operated HA data

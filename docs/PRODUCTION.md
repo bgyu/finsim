@@ -12,9 +12,11 @@ environment example.
 Generated units require a pre-created named Podman network that provides
 routable addresses across hosts. This can be an operator-managed
 macvlan/ipvlan or an approved network plugin; a default host-local bridge is
-not sufficient. Provide DNS/service discovery separately. Units reject host
-networking and do not grant `SYS_ADMIN`. Confirm systemd cgroup v2 delegation
-on each compute host instead of broadening privileges.
+not sufficient. Provide DNS/service discovery separately. Non-compute units
+reject host networking, host namespaces and privileged mode. Compute units are
+explicit trusted host agents: they use privileged Podman and the host cgroup
+namespace on dedicated nodes so root `slurmd` can enforce cgroup devices and
+job mount namespaces. Treat their compromise as host compromise.
 
 Use separate failure domains for primary/backup controllers and slurmdbd.
 Controllers share a strongly consistent `StateSaveLocation`; slurmdbd members
@@ -41,10 +43,17 @@ RS256 JWKS trust. Private issuer keys never enter the Slurm containers. MUNGE,
 TLS and storage credentials are projected at the documented paths with the
 fixed numeric ownership required by their consumers.
 
+With `use_jwt_client_ids_only`, the issuer must fix the complete `finsim`
+identity: `preferred_username`, UID/GID 64032 and a matching nested `id` object
+with `name`, `gecos`, `dir`, `shell`, and exactly one trusted `groups` mapping
+or numeric `gids` array. The issuer is a cluster-root trust boundary; callers
+must never select these claims. Use a Slurm-specific RS256 key/JWKS and
+short-lived, audience-constrained tokens.
+
 Proxy and demonstration cache roles serve HTTPS directly with role-filtered
-PEM identities. The public service CA bundle is also projected to compute nodes and
-propagated through Slurm job environments; server private keys never enter a
-job allocation.
+PEM identities. The public service CA bundle is also projected to compute
+nodes and propagated through Slurm job environments; server private keys never
+enter a job allocation.
 
 The exact host layout, ownership modes, role variables and render commands are
 in [USER_GUIDE.md](USER_GUIDE.md).
@@ -52,8 +61,9 @@ in [USER_GUIDE.md](USER_GUIDE.md).
 ## Compute isolation and elasticity
 
 Production compute startup rejects a remapped user namespace, non-cgroup-v2
-host, or non-writable delegated hierarchy. `slurmd` is root; `DisableRootJobs`
-and accounting ensure FinSim payloads are UID 64032.
+host, private cgroup namespace or non-writable delegated hierarchy. It creates
+and removes a probe child cgroup before starting. `slurmd` is root;
+`DisableRootJobs` and accounting ensure FinSim payloads are UID 64032.
 
 Provisioning assigns a stable node name, mounts config/secrets/app/data paths,
 and starts one `compute-master` or `compute-worker` role. Dynamic registration
@@ -63,8 +73,9 @@ reservations, stops the container, then deletes its dynamic record. Cloud API
 calls belong behind the external mTLS lifecycle service.
 
 Optional `FINSIM_LIFECYCLE_ENABLE=1` rendering connects the installed bounded
-resume/suspend clients to Slurm. It does not implement the lifecycle service or
-cloud adapter.
+resume/suspend clients to Slurm. It requires a validated `State=CLOUD`
+inventory so queued jobs have nodes that can trigger resume. It does not
+implement the lifecycle service or cloud adapter.
 
 ## Storage
 

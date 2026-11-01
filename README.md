@@ -84,6 +84,12 @@ MariaDB daemons drop to their service identities. All FinSim proxy, cache,
 master and worker code runs as UID/GID 64032. `DisableRootJobs=YES` and the
 acceptance test enforce this boundary.
 
+Production compute containers are explicit trusted host agents on dedicated
+nodes: root `slurmd` receives the host cgroup namespace and privileged compute
+access needed by cgroup/device and mount-namespace plugins. No other role gets
+that profile or its secrets. Treat compromise of a compute container as host
+compromise; the detailed target-host gate is in the production guide.
+
 ## Documentation
 
 - [Architecture and implementation](docs/ARCHITECTURE.md)
@@ -96,3 +102,5 @@ acceptance test enforce this boundary.
 - [TeamCity and CI](docs/CI.md)
 - [Approved design](docs/plans/2026-10-30-two-image-production-parity-design.md)
 - [Implementation plan](docs/plans/2026-10-30-two-image-production-parity-implementation-plan.md)
+- [Current compute and elasticity hardening design](docs/plans/2026-11-01-production-compute-elasticity-hardening-design.md)
+- [Current compute and elasticity implementation plan](docs/plans/2026-11-01-production-compute-elasticity-hardening-implementation-plan.md)

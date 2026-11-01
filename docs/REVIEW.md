@@ -1,6 +1,6 @@
 # Implementation review and production cautions
 
-Review date: 2026-10-31
+Review date: 2026-11-01
 
 This document records what was reviewed, what was corrected and what remains a
 deployment responsibility. “Production-oriented” means that the repository
@@ -22,16 +22,20 @@ capacity testing and security approval.
 | Local topology could not be extended without editing Compose | `local-node.sh` safely adds dynamic nodes and drains/deletes them while retaining spool state |
 | Production render had no standalone validation | `validate-production-config.sh` checks manifest completeness, hashes, TLS, JWT, cgroup and lifecycle invariants |
 | Production proxy/cache listeners were loopback HTTP with no projected identity | application roles now require a validated PEM certificate/key, listen on routable HTTPS, and propagate a public service CA bundle to master and worker jobs |
+| Lifecycle hooks had no scheduler-visible nodes to resume | lifecycle rendering now requires a strictly parsed, manifested `State=CLOUD` inventory; dynamic external scale-out remains independent |
+| Restricted compute units could not honestly guarantee cgroup-device and mount-namespace operations | compute-only Quadlets now declare the dedicated-host trusted-agent boundary, host cgroup namespace and privileged Podman contract; every other role remains least-privilege |
+| Production application health proved only that a process existed | generated proxy/cache units now call their HTTPS readiness endpoints with the public service CA |
 
 ## Security boundaries to preserve
 
 - The runtime image starts with a small root supervisor. It stages validated
   inputs and drops to fixed daemon identities. `slurmd` stays root because it
   must manage cgroups and launch jobs as their submitting identity.
-- Do not add `--privileged`, `SYS_ADMIN`, host networking or host user namespace
-  settings to generated units as a troubleshooting shortcut. The renderer
-  deliberately omits them. Resolve cgroup delegation and routable networking at
-  the platform layer.
+- Never add compute privileges to database, accounting, controller, REST,
+  proxy or cache roles. Generated compute units alone use privileged Podman and
+  the host cgroup namespace because root `slurmd`, cgroup device policy and
+  `job_container/tmpfs` are host-trusted operations. Run one on a dedicated,
+  replaceable compute host and treat container compromise as host compromise.
 - Only the master node and proxy receive a Slurm bearer-token path. Workers
   receive only the cache credential required for their data key.
 - The development HS256 Slurm key and development RSA issuer are simulation
@@ -53,8 +57,8 @@ capacity testing and security approval.
   endpoints and tested DNS/load-balancer behavior.
 - Dynamic self-registration is appropriate when an external platform starts
   nodes. Slurm-driven scaling additionally requires precreated cloud inventory
-  and an implemented lifecycle API. This repository contains only its mTLS
-  client contract.
+  and an implemented lifecycle API. The repository validates and manifests the
+  inventory and contains only the lifecycle service's mTLS client contract.
 - Node removal must drain, wait for allocations and reservations, stop the
   workload and only then delete the dynamic Slurm record.
 - `MaxNodeCount` is a controller bound, not a provisioner and not a capacity
@@ -97,13 +101,14 @@ capacity testing and security approval.
 
 Before admitting real workloads, complete all of the following:
 
-1. Threat model and security review of network, secrets, identity and rootful
-   compute isolation.
+1. Threat model and security review of network, secrets, identity and the
+   privileged, rootful dedicated-compute-host boundary.
 2. Image SBOM, vulnerability policy, signature and admission verification.
 3. PKI/JWT issuance, rotation, expiry, revocation and outage exercises.
 4. MariaDB backup, point-in-time recovery and failover exercise.
 5. Controller state backup, fencing and failover exercise.
-6. Dynamic add, drain, delete, lifecycle timeout and partial-failure exercise.
+6. Dynamic add, drain, delete, cloud resume/suspend, lifecycle timeout and
+   partial-failure exercise.
 7. Load and soak tests at representative node, job-array and REST request scale.
 8. Monitoring, alerting, audit-log retention and incident runbooks.
 9. Application release rollback and persistent-schema compatibility test.

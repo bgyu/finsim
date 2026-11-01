@@ -318,6 +318,12 @@ Without lifecycle integration, an external platform starts dynamic compute
 nodes and they self-register. To let Slurm request capacity, render the hooks:
 
 ```bash
+sudo install -o root -g root -m 0600 \
+  deploy/cloud-nodes.conf.example /tmp/finsim-cloud-nodes.conf
+# Edit the two bounded ranges and resources for the approved capacity plan.
+```
+
+```bash
 sudo env \
   FINSIM_CONTROLLER_PRIMARY=controller-primary \
   FINSIM_CONTROLLER_BACKUP=controller-backup \
@@ -329,13 +335,20 @@ sudo env \
   FINSIM_SUSPEND_TIMEOUT=300 \
   FINSIM_SUSPEND_TIME=1800 \
   scripts/prepare-config.sh --profile production \
+    --cloud-inventory /tmp/finsim-cloud-nodes.conf \
     --output-dir /etc/finsim/config
 ```
 
-This repository supplies only the bounded mTLS client. The external lifecycle
-service must authenticate the cluster, enforce idempotency, reconcile desired
-state, create the appropriate `State=CLOUD` inventory, start or stop hosts and
-report failures. Test controller failover while lifecycle requests are active.
+The inventory accepts only `NodeName` records with explicit positive `CPUs`,
+`RealMemory`, `State=CLOUD`, and exactly one of `finsim-master` or
+`finsim-worker`. It is parsed as data, copied into the manifest and inserted in
+`slurm.conf`; lifecycle rendering without it fails. Keep its expanded total
+within `MaxNodeCount`.
+
+This repository supplies the inventory contract and bounded mTLS client. The
+external lifecycle service must authenticate the cluster, enforce idempotency,
+reconcile desired state, start or stop the exact requested hosts and report
+failures. Test controller failover while lifecycle requests are active.
 
 ## 12. Production host contract
 
@@ -421,10 +434,14 @@ sudo systemctl status finsim-compute-0001.service
 sudo podman healthcheck run finsim-compute-0001
 ```
 
-The generated compute unit uses `Delegate=yes` and does not grant `SYS_ADMIN`.
-Confirm cgroup v2 delegation on the target OS before admitting the node. A
-failure of the production entrypoint's cgroup checks is a deployment failure,
-not a reason to add broad privileges automatically.
+The generated compute unit uses `Delegate=yes`, privileged rootful Podman, the
+host cgroup namespace and a read-write host cgroup v2 mount. This is deliberate:
+root `slurmd`, device policy and `job_container/tmpfs` are host-trusted
+operations. The image and application mounts remain read-only and compute gets
+no database, JWKS-signing, lifecycle or controller-state secret. Run it only on
+a dedicated compute host. Before admitting the node, prove a UID-64032 job,
+CPU/memory/device constraints, private `/tmp`, drain and removal on the exact
+EL10/Podman/Slurm combination.
 
 Generated proxy/cache units bind Kestrel to `https://0.0.0.0` on their role
 port and require the instance-specific `application-role.pem` and
@@ -464,7 +481,9 @@ The compute entrypoint supports three explicit modes:
 | `static` | registers the host name against a precreated static or `State=CLOUD` record |
 
 The generated environment example defaults to `dynamic`. Automatic Slurm
-power saving normally uses precreated cloud inventory and `static` mode.
+power saving uses the rendered cloud inventory and `static` mode: set
+`SLURMD_REGISTRATION_MODE=static`, keep `SLURM_CONF_SERVER`, remove
+`SLURMD_FEATURE`, and make the host name equal the requested `NodeName`.
 
 Safe manual removal is:
 
@@ -478,6 +497,8 @@ scontrol delete NodeName=compute-0001
 
 Only dynamic nodes can be deleted. Never terminate the host before drain and
 allocation checks unless an incident policy explicitly accepts job loss.
+Predeclared `State=CLOUD` records remain in configuration after scale-in; stop
+their hosts after drain and let Slurm return them to the powered-down state.
 
 ## 16. JWT, TLS and credential rules
 
@@ -490,11 +511,28 @@ subject, exact audience and least-privilege scope:
 - proxy/master: non-administrative `finsim` Slurm identity;
 - workers do not receive a Slurm token.
 
+Because production sets `use_jwt_client_ids_only`, a Slurm token must carry a
+complete immutable POSIX identity. For this repository that means
+`preferred_username=finsim`, numeric `uid=64032`, numeric `gid=64032`, and an
+`id` object whose `name`, `gecos`, `dir` and `shell` describe the same account,
+plus exactly one of a trusted name-to-GID `groups` mapping or numeric `gids`
+array. The issuer must fix these values; never accept caller-selected UID, GID
+or supplemental groups. Use a Slurm-specific signing key/JWKS and constrain
+issuer, audience and lifetime at issuance and every upstream authentication
+boundary.
+
+The Slurm token is authority for the shared `finsim` account, not a
+per-workflow capability. A master can act on other jobs owned by that account.
+FinSimProxy enforces external workflow ownership, but deployments needing
+hostile-tenant isolation require separate Slurm identities and a different
+reviewed account model.
+
 Rotate tokens by atomically replacing mode-0400 files in tmpfs. Consumers read
 the file for each request and do not log the value. Test old-key overlap,
 revocation, clock skew and issuer outage. Use HTTPS for every production REST
-hop. The example ASP.NET services bind loopback and are intended to sit behind
-a TLS reverse proxy or service mesh.
+hop. Production proxy/cache units bind routable `https://0.0.0.0` listeners,
+present role-specific certificates and run HTTPS readiness checks. A load
+balancer may terminate another TLS layer but must keep the backend encrypted.
 
 ## 17. Storage, backup and recovery
 
