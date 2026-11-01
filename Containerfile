@@ -78,6 +78,23 @@ RUN chmod 0755 /opt/slurm-source/scripts/configure-runtime.sh && \
         --source-root /opt/slurm-source && \
     rm -rf -- /opt/slurm-source
 
+# Network metadata for this universal, role-selected runtime image (all TCP):
+# - 3306: MariaDB. The server port comes from `port=3306` in
+#   config/mariadb-server.cnf.in; slurmdbd's destination is independently set
+#   by SLURMDBD_STORAGE_PORT (default 3306) in scripts/cluster-entrypoint.sh.
+# - 6817: slurmctld RPC. The port comes from `SlurmctldPort=6817` in
+#   config/slurm.conf.in.
+# - 6818: slurmd RPC. The port comes from `SlurmdPort=6818` in
+#   config/slurm.conf.in.
+# - 6819: slurmdbd RPC. Its listener comes from `DbdPort=6819` in
+#   config/slurmdbd.conf.template; slurmctld's destination comes from
+#   `AccountingStoragePort=6819` in config/slurm.conf.in.
+# - 6820: slurmrestd HTTP(S). The listener is set by SLURMRESTD_LISTEN; its
+#   default is defined in scripts/cluster-entrypoint.sh and deployments
+#   override it in compose.yaml or scripts/render-production-unit.sh.
+# EXPOSE declares image metadata only: it neither publishes host ports nor
+# overrides these configurations. CONTAINER_ROLE starts only the selected
+# service, so each role listens on only its applicable port(s).
 EXPOSE 3306 6817 6818 6819 6820
 
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=12 \
