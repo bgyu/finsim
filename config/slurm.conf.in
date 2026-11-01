@@ -38,6 +38,10 @@ SelectType=select/cons_tres
 SelectTypeParameters=CR_Core_Memory
 @POWER_SAVE_LINES@
 
+# Optional, validated production State=CLOUD inventory. Dynamic -Z nodes do
+# not require predeclared records and leave this section as a comment.
+@CLOUD_NODE_INVENTORY@
+
 AccountingStorageType=accounting_storage/slurmdbd
 @ACCOUNTING_HOST_LINES@
 AccountingStoragePort=6819

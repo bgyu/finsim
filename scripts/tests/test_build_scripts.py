@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -26,6 +28,20 @@ def run_bash(program: str) -> subprocess.CompletedProcess[str]:
 
 
 class BuildScriptTests(unittest.TestCase):
+    @staticmethod
+    def production_environment(**overrides: str) -> dict[str, str]:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "FINSIM_CONTROLLER_PRIMARY": "controller-primary",
+                "FINSIM_CONTROLLER_BACKUP": "controller-backup",
+                "FINSIM_SLURMDBD_PRIMARY": "slurmdbd-primary",
+                "FINSIM_SLURMDBD_BACKUP": "slurmdbd-backup",
+            }
+        )
+        environment.update(overrides)
+        return environment
+
     def test_runtime_environment_is_parsed_as_data(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
             root = Path(temporary)
@@ -135,6 +151,231 @@ class BuildScriptTests(unittest.TestCase):
                 text = unit.read_text(encoding="utf-8")
                 self.assertNotIn("Volume=/etc/finsim/secrets:/run/secrets", text)
                 self.assertNotIn("SYS_ADMIN", text)
+                if role in {"compute-master", "compute-worker"}:
+                    self.assertIn(
+                        "PodmanArgs=--privileged --cgroupns=host", text
+                    )
+                    self.assertIn(
+                        "Volume=/sys/fs/cgroup:/sys/fs/cgroup:rw", text
+                    )
+                    self.assertNotIn("NoNewPrivileges=true", text)
+                else:
+                    self.assertNotIn("--privileged", text)
+                    self.assertNotIn("--cgroupns=host", text)
+                    self.assertIn("NoNewPrivileges=true", text)
+                    self.assertIn("DropCapability=all", text)
+                if role in {"proxy", "cache"}:
+                    self.assertIn("/health/ready", text)
+                    self.assertIn("--cacert /run/secrets/service-ca-bundle.pem", text)
+
+    def test_lifecycle_requires_and_manifests_cloud_inventory(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            output = root / "config"
+            inventory = root / "cloud-nodes.conf"
+            inventory.write_text(
+                "# Bounded scheduler-visible capacity\n"
+                "NodeName=master[0001-0010] CPUs=4 RealMemory=8192 "
+                "Feature=finsim-master State=CLOUD\n"
+                "NodeName=worker[0001-3000] CPUs=8 RealMemory=16384 "
+                "Feature=finsim-worker State=CLOUD\n",
+                encoding="ascii",
+            )
+            inventory.chmod(0o600)
+            command = [
+                "bash",
+                str(ROOT / "scripts" / "prepare-config.sh"),
+                "--profile",
+                "production",
+                "--output-dir",
+                str(output),
+                "--cloud-inventory",
+                str(inventory),
+            ]
+            rendered = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=self.production_environment(
+                    FINSIM_LIFECYCLE_ENABLE="1",
+                    FINSIM_LIFECYCLE_API_URL="https://lifecycle.service.internal",
+                ),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(rendered.returncode, 0, rendered.stderr)
+            slurm = (output / "slurm.conf").read_text(encoding="utf-8")
+            self.assertIn("NodeName=master[0001-0010]", slurm)
+            self.assertIn("NodeName=worker[0001-3000]", slurm)
+            manifest = json.loads(
+                (output / "generated-manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("cloud-nodes.conf", manifest["files"])
+            validated = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "validate-production-config.sh"),
+                    str(output),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertEqual(validated.returncode, 0, validated.stderr)
+
+            (output / "cloud-nodes.conf").write_text(
+                "NodeName=tampered CPUs=1 RealMemory=1 Feature=finsim-worker State=CLOUD\n",
+                encoding="ascii",
+            )
+            tampered = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "validate-production-config.sh"),
+                    str(output),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(tampered.returncode, 0)
+
+    def test_lifecycle_rejects_missing_cloud_inventory(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "prepare-config.sh"),
+                    "--profile",
+                    "production",
+                    "--output-dir",
+                    temporary,
+                ],
+                cwd=ROOT,
+                env=self.production_environment(
+                    FINSIM_LIFECYCLE_ENABLE="1",
+                    FINSIM_LIFECYCLE_API_URL="https://lifecycle.service.internal",
+                ),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("cloud-inventory", result.stderr)
+
+    def test_cloud_inventory_rejects_unsafe_or_invalid_data(self) -> None:
+        invalid_documents = {
+            "empty": "# no records\n",
+            "unknown-key": (
+                "PartitionName=batch Nodes=ALL State=UP\n"
+            ),
+            "missing-memory": (
+                "NodeName=worker01 CPUs=8 Feature=finsim-worker State=CLOUD\n"
+            ),
+            "wrong-state": (
+                "NodeName=worker01 CPUs=8 RealMemory=1024 "
+                "Feature=finsim-worker State=FUTURE\n"
+            ),
+            "wrong-feature": (
+                "NodeName=worker01 CPUs=8 RealMemory=1024 "
+                "Feature=untrusted State=CLOUD\n"
+            ),
+            "duplicate": (
+                "NodeName=worker01 CPUs=8 RealMemory=1024 "
+                "Feature=finsim-worker State=CLOUD\n"
+                "NodeName=worker01 CPUs=8 RealMemory=1024 "
+                "Feature=finsim-worker State=CLOUD\n"
+            ),
+            "shell-syntax": (
+                "NodeName=$(touch CPUs=8 RealMemory=1024 "
+                "Feature=finsim-worker State=CLOUD\n"
+            ),
+        }
+        for name, content in invalid_documents.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(
+                dir="/tmp"
+            ) as temporary:
+                root = Path(temporary)
+                inventory = root / "inventory"
+                inventory.write_text(content, encoding="ascii")
+                inventory.chmod(0o600)
+                result = subprocess.run(
+                    [
+                        "bash",
+                        str(ROOT / "scripts" / "prepare-config.sh"),
+                        "--profile",
+                        "production",
+                        "--output-dir",
+                        str(root / "output"),
+                        "--cloud-inventory",
+                        str(inventory),
+                    ],
+                    cwd=ROOT,
+                    env=self.production_environment(),
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                )
+                self.assertNotEqual(result.returncode, 0, name)
+
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            inventory = root / "inventory"
+            inventory.write_text(
+                "NodeName=worker01 CPUs=8 RealMemory=1024 "
+                "Feature=finsim-worker State=CLOUD\n",
+                encoding="ascii",
+            )
+            inventory.chmod(0o666)
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "prepare-config.sh"),
+                    "--profile",
+                    "production",
+                    "--output-dir",
+                    str(root / "output"),
+                    "--cloud-inventory",
+                    str(inventory),
+                ],
+                cwd=ROOT,
+                env=self.production_environment(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("writable", result.stderr)
+
+            inventory.chmod(0o600)
+            link = root / "inventory-link"
+            link.symlink_to(inventory)
+            result = subprocess.run(
+                [
+                    "bash",
+                    str(ROOT / "scripts" / "prepare-config.sh"),
+                    "--profile",
+                    "production",
+                    "--output-dir",
+                    str(root / "output-link"),
+                    "--cloud-inventory",
+                    str(link),
+                ],
+                cwd=ROOT,
+                env=self.production_environment(),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0)
 
     def test_pinned_version_file_is_parsed_as_data(self) -> None:
         result = run_bash(

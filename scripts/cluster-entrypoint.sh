@@ -682,7 +682,7 @@ run_controller() {
 }
 
 require_production_compute_isolation() {
-    local inside outside length fs_type
+    local inside outside length fs_type cgroup_path cgroup_dir probe
     read -r inside outside length < /proc/self/uid_map
     if [[ $inside != 0 || $outside != 0 || $length -lt 4294967294 ]]; then
         die 'production slurmd cannot run in a remapped/rootless user namespace'
@@ -690,8 +690,17 @@ require_production_compute_isolation() {
     fs_type=$(stat --file-system --format='%T' /sys/fs/cgroup)
     [[ $fs_type == cgroup2fs && -r /sys/fs/cgroup/cgroup.controllers ]] ||
         die 'production compute requires a unified cgroup v2 hierarchy'
-    [[ -w /sys/fs/cgroup/cgroup.subtree_control ]] ||
-        die 'production compute requires a writable/delegated cgroup v2 subtree'
+    cgroup_path=$(awk -F: '$1 == "0" && $2 == "" { print $3 }' /proc/self/cgroup)
+    [[ $cgroup_path == /* && $cgroup_path != / && $cgroup_path != *..* ]] ||
+        die 'production compute requires the host cgroup namespace'
+    cgroup_dir=/sys/fs/cgroup$cgroup_path
+    [[ -d $cgroup_dir && -w $cgroup_dir/cgroup.subtree_control ]] ||
+        die 'production compute requires its writable delegated host cgroup'
+    probe=$cgroup_dir/.finsim-cgroup-probe-$$
+    mkdir -- "$probe" 2>/dev/null ||
+        die 'production compute cannot create a delegated child cgroup'
+    rmdir -- "$probe" 2>/dev/null ||
+        die 'production compute cannot remove its delegated child cgroup'
 }
 
 run_compute() {

@@ -61,9 +61,11 @@ fi
 [[ $output_dir == /* ]] || output_dir=$PWD/$output_dir
 install -d -m 0750 "$output_dir"
 
-declare -a env_lines=() caps=() volumes=() example=()
+declare -a env_lines=() caps=() volumes=() example=() security_lines=()
 container_role=$role
 exec_line=
+health_command='HealthCmd=/usr/local/sbin/cluster-healthcheck'
+trusted_compute=0
 
 add_slurm_config() {
     env_lines+=("Environment=SLURM_CONF=/etc/finsim-cluster/slurm.conf")
@@ -140,8 +142,12 @@ case $role in
             "Environment=SLURMRESTD_LISTEN=https://0.0.0.0:6820")
         example+=("SLURMRESTD_THREADS=32") ;;
     compute-master|compute-worker)
-        add_service_caps; add_slurm_config; add_munge_socket; add_control_tls
-        caps+=("AddCapability=SYS_NICE")
+        # Root slurmd is a host-trusted agent. Cgroup device filtering and the
+        # job_container/tmpfs mount namespace need host integration that a
+        # portable capability allow-list cannot guarantee. Limit this profile
+        # to dedicated compute hosts and never copy it to another role.
+        trusted_compute=1
+        add_slurm_config; add_munge_socket; add_control_tls
         volumes+=("Volume=/srv/finsim/apps:/finsim-app:ro"
             "Volume=/srv/finsim/data:/finsim-data:rw"
             "Volume=/etc/finsim/public/service-ca-bundle.pem:/run/secrets/service-ca-bundle.pem:ro"
@@ -165,6 +171,7 @@ case $role in
             "Volume=/etc/finsim/secrets/cache-client.jwt:/run/secrets/cache-client.jwt:ro"
             "Volume=/run/finsim/credentials:/run/credentials:ro")
         exec_line="Exec=/finsim-app/releases/$app_release/FinSimProxy/FinSimProxy"
+        health_command="HealthCmd=/usr/bin/curl --fail --silent --show-error --max-time 5 --cacert /run/secrets/service-ca-bundle.pem https://$instance:8088/health/ready"
         example+=("ASPNETCORE_URLS=https://0.0.0.0:8088"
             "Jwt__Issuer=https://identity.example.invalid/" "Jwt__Audience=finsim-proxy"
             "Jwt__JwksFile=/run/secrets/app-jwks.json"
@@ -186,22 +193,35 @@ case $role in
             "Volume=/etc/finsim/public/app-jwks.json:/run/secrets/app-jwks.json:ro"
             "Volume=/var/lib/finsim/cache:/var/lib/finsim/cache:rw")
         exec_line="Exec=/finsim-app/releases/$app_release/FinSimCache/FinSimCache"
+        health_command="HealthCmd=/usr/bin/curl --fail --silent --show-error --max-time 5 --cacert /run/secrets/service-ca-bundle.pem https://$instance:8090/health/ready"
         example+=("ASPNETCORE_URLS=https://0.0.0.0:8090"
             "Jwt__Issuer=https://identity.example.invalid/" "Jwt__Audience=finsim-cache"
             "Jwt__JwksFile=/run/secrets/app-jwks.json" "Cache__DataRoot=/var/lib/finsim/cache") ;;
 esac
+
+if [[ $trusted_compute == 1 ]]; then
+    security_lines+=(
+        "# TRUSTED COMPUTE HOST: root slurmd is equivalent to host root."
+        "# Run only on a dedicated, replaceable compute host after the EL10 acceptance gate."
+        "PodmanArgs=--privileged --cgroupns=host"
+        "Volume=/sys/fs/cgroup:/sys/fs/cgroup:rw")
+else
+    security_lines+=("NoNewPrivileges=true" "DropCapability=all")
+fi
 
 join_lines() { local IFS=$'\n'; printf '%s' "$*"; }
 unit="$output_dir/finsim-$instance.container"
 python3 - "$project_dir/deploy/quadlet/finsim-role.container.in" "$unit" \
     "$role" "$instance" "$image" "$container_role" "$network" \
     "$(join_lines "${env_lines[@]}")" "$(join_lines "${caps[@]}")" \
-    "$(join_lines "${volumes[@]}")" "$exec_line" <<'PY'
+    "$(join_lines "${volumes[@]}")" "$exec_line" \
+    "$(join_lines "${security_lines[@]}")" "$health_command" <<'PY'
 from pathlib import Path
 import re, sys
 source = Path(sys.argv[1]).read_text(encoding="utf-8")
 values = dict(zip(("ROLE", "INSTANCE", "IMAGE", "CONTAINER_ROLE", "NETWORK",
-                   "ENVIRONMENT", "CAPABILITIES", "VOLUMES", "EXEC"),
+                   "ENVIRONMENT", "CAPABILITIES", "VOLUMES", "EXEC",
+                   "SECURITY_OPTIONS", "HEALTH_COMMAND"),
                   sys.argv[3:], strict=True))
 for name, value in values.items():
     marker = f"@{name}@"

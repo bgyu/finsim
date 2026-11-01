@@ -6,13 +6,15 @@ umask 077
 project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 profile=simulation
 output_dir=$project_dir/.runtime/config
+cloud_inventory=${FINSIM_CLOUD_INVENTORY_FILE:-}
 
 while (($#)); do
     case $1 in
         --profile) profile=${2:?}; shift 2 ;;
         --output-dir) output_dir=${2:?}; shift 2 ;;
+        --cloud-inventory) cloud_inventory=${2:?}; shift 2 ;;
         -h|--help)
-            printf 'usage: %s [--profile simulation|production] [--output-dir DIR]\n' "$0"
+            printf 'usage: %s [--profile simulation|production] [--output-dir DIR] [--cloud-inventory FILE]\n' "$0"
             exit 0 ;;
         *) printf 'prepare-config: unknown option: %s\n' "$1" >&2; exit 64 ;;
     esac
@@ -23,7 +25,7 @@ done
 }
 [[ $output_dir == /* ]] || output_dir=$project_dir/$output_dir
 install -d -m 0700 "$output_dir"
-rm -f -- "$output_dir/lifecycle-client.conf"
+rm -f -- "$output_dir/lifecycle-client.conf" "$output_dir/cloud-nodes.conf"
 
 validate_host() {
     local value=$1 description=$2
@@ -42,7 +44,103 @@ validate_bounded_uint() {
     }
 }
 
+prepare_cloud_inventory() {
+    local source=$1 destination=$2
+    python3 - "$source" "$destination" <<'PY'
+from pathlib import Path
+import os
+import re
+import stat
+import sys
+
+source = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+try:
+    descriptor = os.open(source, flags)
+except OSError as error:
+    raise SystemExit(f"prepare-config: cannot open cloud inventory safely: {error}")
+try:
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit("prepare-config: cloud inventory must be a regular file")
+    if metadata.st_uid != os.geteuid():
+        raise SystemExit("prepare-config: cloud inventory must be owned by the invoking user")
+    if metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        raise SystemExit("prepare-config: cloud inventory must not be group/world writable")
+    if metadata.st_size <= 0 or metadata.st_size > 1_048_576:
+        raise SystemExit("prepare-config: cloud inventory has an invalid size")
+    raw = os.read(descriptor, metadata.st_size + 1)
+finally:
+    os.close(descriptor)
+
+try:
+    text = raw.decode("ascii")
+except UnicodeDecodeError as error:
+    raise SystemExit("prepare-config: cloud inventory must be ASCII") from error
+if "\r" in text or "\x00" in text:
+    raise SystemExit("prepare-config: cloud inventory contains forbidden characters")
+
+node_pattern = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\[\],-]{0,255}$")
+positive = re.compile(r"^[1-9][0-9]{0,9}$")
+allowed_features = {"finsim-master", "finsim-worker"}
+seen: set[str] = set()
+output: list[str] = []
+effective = 0
+for number, original in enumerate(text.splitlines(), 1):
+    line = original.strip()
+    if not line or line.startswith("#"):
+        output.append(line)
+        continue
+    effective += 1
+    if effective > 1024:
+        raise SystemExit("prepare-config: cloud inventory has too many records")
+    tokens = line.split()
+    values: dict[str, str] = {}
+    for token in tokens:
+        if token.count("=") != 1:
+            raise SystemExit(f"prepare-config: invalid cloud inventory token on line {number}")
+        name, value = token.split("=", 1)
+        if name in values:
+            raise SystemExit(f"prepare-config: duplicate {name} on line {number}")
+        values[name] = value
+    required = {"NodeName", "CPUs", "RealMemory", "Feature", "State"}
+    if set(values) != required:
+        raise SystemExit(
+            f"prepare-config: line {number} must contain exactly "
+            "NodeName, CPUs, RealMemory, Feature, and State"
+        )
+    node = values["NodeName"]
+    if not node_pattern.fullmatch(node):
+        raise SystemExit(f"prepare-config: invalid NodeName expression on line {number}")
+    if node in seen:
+        raise SystemExit(f"prepare-config: duplicate NodeName expression: {node}")
+    seen.add(node)
+    if not positive.fullmatch(values["CPUs"]) or int(values["CPUs"]) > 8192:
+        raise SystemExit(f"prepare-config: CPUs is invalid on line {number}")
+    if not positive.fullmatch(values["RealMemory"]) or int(values["RealMemory"]) > 1_000_000_000:
+        raise SystemExit(f"prepare-config: RealMemory is invalid on line {number}")
+    if values["Feature"] not in allowed_features:
+        raise SystemExit(f"prepare-config: unsupported Feature on line {number}")
+    if values["State"] != "CLOUD":
+        raise SystemExit(f"prepare-config: State must be CLOUD on line {number}")
+    output.append(
+        f"NodeName={node} CPUs={values['CPUs']} RealMemory={values['RealMemory']} "
+        f"Feature={values['Feature']} State=CLOUD"
+    )
+
+if effective == 0:
+    raise SystemExit("prepare-config: cloud inventory contains no NodeName records")
+destination.write_text("\n".join(output).rstrip() + "\n", encoding="ascii")
+os.chmod(destination, 0o644)
+PY
+}
+
 if [[ $profile == simulation ]]; then
+    [[ -z $cloud_inventory ]] || {
+        printf 'prepare-config: cloud inventory is production-only\n' >&2
+        exit 64
+    }
     cluster_name=${FINSIM_CLUSTER_NAME:-finsim-local}
     controller_lines='SlurmctldHost=controller'
     accounting_lines='AccountingStorageHost=slurmdbd'
@@ -62,6 +160,7 @@ if [[ $profile == simulation ]]; then
     dbd_tls=''
     dbd_hosts='DbdHost=slurmdbd'
     mariadb_tls=''
+    cloud_inventory_lines='# No predeclared cloud inventory in the simulation profile.'
     [[ ${FINSIM_LIFECYCLE_ENABLE:-0} == 0 ]] || {
         printf 'prepare-config: lifecycle integration is production-only\n' >&2
         exit 64
@@ -102,7 +201,17 @@ ConstrainDevices=yes'
         exit 64
     }
     power_save=''
+    cloud_inventory_lines='# No predeclared cloud inventory; external scale-out uses dynamic -Z nodes.'
+    if [[ -n $cloud_inventory ]]; then
+        [[ $cloud_inventory == /* ]] || cloud_inventory=$PWD/$cloud_inventory
+        prepare_cloud_inventory "$cloud_inventory" "$output_dir/cloud-nodes.conf"
+        cloud_inventory_lines=$(<"$output_dir/cloud-nodes.conf")
+    fi
     if [[ $lifecycle_enable == 1 ]]; then
+        [[ -n $cloud_inventory ]] || {
+            printf 'prepare-config: lifecycle integration requires --cloud-inventory\n' >&2
+            exit 64
+        }
         lifecycle_api=${FINSIM_LIFECYCLE_API_URL:?set FINSIM_LIFECYCLE_API_URL}
         [[ $lifecycle_api =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[-A-Za-z0-9._~]+)*$ ]] || {
             printf 'prepare-config: FINSIM_LIFECYCLE_API_URL must be a fixed HTTPS URL\n' >&2
@@ -162,7 +271,8 @@ done
 python3 - "$project_dir/config/slurm.conf.in" "$output_dir/slurm.conf" \
     "$cluster_name" "$controller_lines" "$auth_alt" "$tls_lines" \
     "$proctrack" "$task_plugin" "$containment" "$max_nodes" "$max_jobs" \
-    "$accounting_lines" "$job_acct" "$private_data" "$power_save" <<'PY'
+    "$accounting_lines" "$job_acct" "$private_data" "$power_save" \
+    "$cloud_inventory_lines" <<'PY'
 from pathlib import Path
 import sys
 
@@ -170,7 +280,7 @@ source = Path(sys.argv[1]).read_text(encoding="utf-8")
 names = ("CLUSTER_NAME", "CONTROLLER_LINES", "AUTH_ALT_PARAMETERS", "TLS_LINES",
          "PROCTRACK_TYPE", "TASK_PLUGIN", "CONTAINMENT_LINES", "MAX_NODE_COUNT",
          "MAX_JOB_COUNT", "ACCOUNTING_HOST_LINES", "JOB_ACCT_GATHER_TYPE",
-         "PRIVATE_DATA_LINE", "POWER_SAVE_LINES")
+         "PRIVATE_DATA_LINE", "POWER_SAVE_LINES", "CLOUD_NODE_INVENTORY")
 values = dict(zip(names, sys.argv[3:], strict=True))
 for key, value in values.items():
     marker = "@" + key + "@"

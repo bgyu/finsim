@@ -16,11 +16,10 @@ Network=@NETWORK@
 Pull=never
 ReadOnly=true
 ReadOnlyTmpfs=true
-NoNewPrivileges=true
-DropCapability=all
 CgroupsMode=enabled
 LogDriver=journald
-HealthCmd=/usr/local/sbin/cluster-healthcheck
+@SECURITY_OPTIONS@
+@HEALTH_COMMAND@
 HealthInterval=30s
 HealthTimeout=10s
 HealthRetries=3
