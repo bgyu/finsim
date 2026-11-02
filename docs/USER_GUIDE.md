@@ -26,19 +26,170 @@ Those are deployment-platform dependencies with documented contracts below.
 
 ## 2. Repository layout
 
+The tracked source tree is organized as follows. Wildcards below group files
+with the same contract; they do not represent omitted repository areas.
+
+```text
+.
+├── .containerignore              Container build-context exclusions
+├── .gitignore                    Generated and workstation-file exclusions
+├── Containerfile                 RPM builder, runtime and development stages
+├── compose.yaml                  Single-host simulation topology
+├── Directory.Build.props         Repository-wide .NET build policy
+├── FinSim.slnx                   Managed solution definition
+├── global.json                   Required .NET SDK version and roll-forward policy
+├── NuGet.Config                  NuGet sources and restore policy
+├── README.md                     Entry point and quick start
+├── build/
+│   └── versions.conf             Reviewed upstream versions and SHA-256 pins
+├── config/
+│   ├── cgroup.conf.in            Profile-rendered Slurm cgroup configuration
+│   ├── job_container.conf        Per-job temporary-filesystem configuration
+│   ├── mariadb-server.cnf.in     MariaDB listener and TLS template
+│   ├── slurm.conf.in             Controller, node and partition template
+│   └── slurmdbd.conf.template    Accounting daemon and storage template
+├── deploy/
+│   ├── cloud-nodes.conf.example  Validated State=CLOUD inventory example
+│   ├── lifecycle/                Cloud-neutral resume/suspend API clients
+│   └── quadlet/                  Production Podman Quadlet templates
+├── docs/
+│   ├── ARCHITECTURE.md           Component boundaries and request flow
+│   ├── CI.md                     Developer image and TeamCity operation
+│   ├── DEPENDENCIES.md           Package and source provenance
+│   ├── OPERATIONS.md             Local operational runbook
+│   ├── PRODUCTION.md             Production deployment and security controls
+│   ├── REVIEW.md                 Reviewed limitations and release gates
+│   ├── SCRIPTS.md                Exhaustive script reference
+│   ├── USER_GUIDE.md             End-to-end task-oriented guide
+│   └── plans/                    Approved design and implementation history
+├── scripts/
+│   ├── build-images.sh           Build both image targets
+│   ├── build-rpms.sh             Build verified MUNGE and Slurm RPMs
+│   ├── install-runtime.sh        Install the runtime RPM allow-list
+│   ├── configure-runtime.sh      Install users, paths and immutable helpers
+│   ├── prepare-storage.sh        Create and ownership-map mutable storage
+│   ├── prepare-config.sh         Render simulation or production config
+│   ├── prepare-cluster.sh        Orchestrate local preparation
+│   ├── bootstrap-dev-secrets.sh  Create local-only keys and credentials
+│   ├── publish-app.sh            Test and publish immutable app releases
+│   ├── cluster-up.sh             Start and health-gate the simulation
+│   ├── cluster-down.sh           Stop the simulation without deleting state
+│   ├── cluster-entrypoint.sh     Start exactly one selected container role
+│   ├── cluster-healthcheck.sh    Role-aware container health checks
+│   ├── local-node.sh             Add, drain or remove simulation nodes
+│   ├── submit-simulation.sh      Shell interface for workflow submission
+│   ├── submit-simulation.py      REST submission and polling implementation
+│   ├── dev-jwt.py                Local JWT generation helper
+│   ├── dev-token-renewer.sh      Rotate the local short-lived Slurm token
+│   ├── render-production-unit.sh Render role-filtered production Quadlets
+│   ├── validate-deployment.sh    Validate a prepared local deployment
+│   ├── validate-production-*.sh  Validate production config and units
+│   ├── acceptance-test.sh        Full live simulation acceptance suite
+│   ├── ci.sh                     TeamCity/CI verify and integration entrypoint
+│   ├── lib/                      Shared build and runtime-environment functions
+│   └── tests/                    Shell/build/configuration contract tests
+├── src/
+│   ├── FinSim.Contracts/         Shared cache keys and workflow DTOs
+│   ├── FinSim.Infrastructure/    Cache, JWT and Slurm REST clients
+│   ├── FinSim/                   Master and worker batch executable
+│   ├── FinSimCache/              Couchbase-like demo key/value HTTP service
+│   └── FinSimProxy/              External workflow API and Slurm submitter
+└── tests/
+    └── FinSim.Tests/             Managed contract and component test runner
+```
+
+### 2.1 Root and build contracts
+
 | Path | Purpose |
 |---|---|
-| `Containerfile` | RPM builder, runtime and development image stages |
-| `build/versions.conf` | reviewed source versions, URLs and SHA-256 pins |
-| `scripts/build-rpms.sh` | reusable EL10 RPM build command |
-| `scripts/install-runtime.sh` | verified RPM/runtime installation command |
-| `scripts/configure-runtime.sh` | fixed users, directories and immutable helpers |
-| `scripts/prepare-*` | external configuration, storage and local preparation |
-| `scripts/render-production-unit.sh` | role-filtered production Quadlet renderer |
-| `config/*.in` | non-secret configuration templates |
-| `deploy/lifecycle` | cloud-neutral mTLS lifecycle API clients |
-| `src` and `tests` | demonstration applications and managed tests |
-| `.runtime` | generated local state; ignored by Git and never an image layer |
+| `.containerignore` | Prevents Git metadata, generated state, credentials and build outputs from entering the image build context. |
+| `.gitignore` | Keeps `.runtime`, agent-local metadata, build outputs and caches out of version control. |
+| `Containerfile` | Builds checksum-verified RPMs, the universal `finsim-runtime` image and the developer/CI `finsim-dev` image. |
+| `compose.yaml` | Assigns roles to the common runtime image for the local MariaDB, Slurm and FinSim simulation. It is not the production orchestrator. |
+| `Directory.Build.props` | Applies common .NET target, compiler, warning and deterministic-build settings. |
+| `FinSim.slnx` | Declares all production and test projects built together. |
+| `global.json` | Pins the supported .NET SDK family for reproducible developer and CI builds. |
+| `NuGet.Config` | Defines package sources and restore behavior used with the committed lock files. |
+| `build/versions.conf` | Pins MUNGE, Slurm and external repository bootstrap artifacts by version and SHA-256. |
+
+### 2.2 Configuration and deployment assets
+
+| Path | Purpose |
+|---|---|
+| `config/` | Source-controlled, non-secret templates rendered by `prepare-config.sh`; generated copies belong under the deployment root. |
+| `deploy/cloud-nodes.conf.example` | Example allow-listed production inventory for predeclared elastic `State=CLOUD` nodes. |
+| `deploy/lifecycle/` | Provider-neutral `ResumeProgram` and `SuspendProgram` clients plus their shared mTLS HTTP implementation. |
+| `deploy/quadlet/` | Universal production role template and non-secret environment example consumed by `render-production-unit.sh`. |
+
+There is intentionally no `infra/` directory. The former `infra/slurm` path
+held only an obsolete POC provenance note; current runtime configuration,
+deployment assets and automation are owned by `config/`, `deploy/` and
+`scripts/` respectively.
+
+### 2.3 Application and test projects
+
+Every .NET project commits its project file and `packages.lock.json`. The lock
+files are part of the reproducible restore contract and must be updated through
+an intentional dependency review.
+
+| Path | Important contents |
+|---|---|
+| `src/FinSim.Contracts/` | `CacheKeys.cs` and `Models.cs`: shared wire and storage contracts. |
+| `src/FinSim.Infrastructure/Cache/` | File and HTTP implementations of `IKeyValueStore`. |
+| `src/FinSim.Infrastructure/Security/` | JWT authentication setup and safe private-token file reading. |
+| `src/FinSim.Infrastructure/Slurm/` | Pinned Slurm REST client and typed exception mapping. |
+| `src/FinSim/Batch/` | Master/worker dispatch, settings and the demo calculation. |
+| `src/FinSim/Program.cs` | Batch executable entrypoint selected by master or worker arguments. |
+| `src/FinSimCache/Program.cs` | Minimal authenticated cache-simulation HTTP API. |
+| `src/FinSimProxy/Program.cs` | External workflow API host and authentication boundary. |
+| `src/FinSimProxy/Services/WorkflowService.cs` | Validates requests, writes input keys and submits the master through Slurm REST. |
+| `tests/FinSim.Tests/` | Dependency-free managed test runner for contracts, cache behavior and REST request construction. |
+
+### 2.4 Automation and documentation ownership
+
+The tree above lists every automation entrypoint. See
+[SCRIPTS.md](SCRIPTS.md) for each script's arguments, security behavior,
+dependencies, sourced functions and examples. Shared shell code is restricted
+to `scripts/lib/build-common.sh` and `scripts/lib/runtime-env.sh`; script-level
+contract tests live in `scripts/tests/test_build_scripts.py`.
+
+The documents have distinct ownership: this guide is task-oriented,
+[ARCHITECTURE.md](ARCHITECTURE.md) explains design,
+[PRODUCTION.md](PRODUCTION.md) defines production controls,
+[OPERATIONS.md](OPERATIONS.md) is the local runbook,
+[CI.md](CI.md) covers developer and TeamCity use,
+[DEPENDENCIES.md](DEPENDENCIES.md) records provenance, and
+[REVIEW.md](REVIEW.md) carries known limitations and release gates.
+`docs/plans/` preserves approved design decisions; it is not the operational
+source of truth when a current guide or runbook exists.
+
+### 2.5 Generated local deployment tree
+
+`.runtime/` is deliberately ignored by Git and excluded from image build
+contexts. It is generated by the preparation and publication scripts and is
+never a source directory:
+
+| Generated path | Purpose |
+|---|---|
+| `.runtime/cluster.env` | Non-secret selection of image tag, application release and local proxy port. |
+| `.runtime/apps/releases/` | Immutable, manifested application releases. |
+| `.runtime/apps/current` | Atomic symbolic link to the selected local release. |
+| `.runtime/config/` | Rendered Slurm, SlurmDBD, cgroup and MariaDB configuration. |
+| `.runtime/secrets/` | Long-lived development-only private keys and bootstrap credentials. |
+| `.runtime/public/` | Public verification material such as application JWKS. |
+| `.runtime/container-secrets/` | Container-consumable client credentials with restricted ownership and modes. |
+| `.runtime/credentials/` | Rotating short-lived Slurm bearer token. |
+| `.runtime/data/` | Shared workflow inputs, results, reports, logs and cache data. |
+| `.runtime/state/mariadb/` | MariaDB database files. |
+| `.runtime/state/slurmctld/` | Controller state required for restart recovery. |
+| `.runtime/state/slurmdbd/` | Accounting daemon state. |
+| `.runtime/state/slurmd/` | Per-node local Slurmd spool directories, including dynamically added nodes. |
+| `.runtime/logs/` | Role-separated local service log directories. |
+
+Do not copy `.runtime/` into an image or commit it. Production uses the same
+configuration and credential contracts, but deployment roots, secret delivery,
+persistent volumes and backup policies are supplied by the production
+platform.
 
 ## 3. Development host prerequisites
 
