@@ -26,7 +26,7 @@ changes.
 | Validate prepared local inputs | `scripts/validate-deployment.sh` |
 | Start or stop the simulation | `scripts/cluster-up.sh`, `scripts/cluster-down.sh` |
 | Submit a REST workflow | `scripts/submit-simulation.sh --wait` |
-| Add or remove a local dynamic node | `scripts/local-node.sh add|remove ...` |
+| Add or remove a local dynamic node | `scripts/local-node.sh add` or `scripts/local-node.sh remove` |
 | Run the complete local acceptance suite | `scripts/acceptance-test.sh` |
 | Run TeamCity/CI verification | `scripts/ci.sh verify` |
 | Run TeamCity/CI integration | `scripts/ci.sh integration` |
