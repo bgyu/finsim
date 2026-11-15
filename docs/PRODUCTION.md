@@ -1,5 +1,10 @@
 # Production deployment
 
+For the conceptual background behind images, containers, namespaces, cgroups,
+capabilities, seccomp, security modules and mounts, see
+[Containers, Linux isolation and FinSim](CONTAINERS.md). This document remains
+the production deployment contract and operational gate.
+
 ## Host model
 
 Pin `finsim-runtime` by digest. Each compute host runs one rootful Podman

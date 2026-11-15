@@ -92,6 +92,7 @@ compromise; the detailed target-host gate is in the production guide.
 
 ## Documentation
 
+- [Container concepts and Linux isolation](docs/CONTAINERS.md)
 - [Architecture and implementation](docs/ARCHITECTURE.md)
 - [Complete build, deployment and operations guide](docs/USER_GUIDE.md)
 - [Exhaustive script reference](docs/SCRIPTS.md)

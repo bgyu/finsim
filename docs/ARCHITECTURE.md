@@ -1,5 +1,8 @@
 # Architecture and implementation
 
+For a conceptual explanation of the Linux and Podman mechanisms behind this
+architecture, see [Containers, Linux isolation and FinSim](CONTAINERS.md).
+
 ## Invariants
 
 Local and production clusters run the same `finsim-runtime` digest, role
