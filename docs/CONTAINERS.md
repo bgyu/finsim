@@ -722,6 +722,11 @@ a development and CI toolbox, not a production daemon image.
 
 ### Common runtime entrypoint
 
+The repository-specific startup workflow is documented in the detailed
+[`cluster-entrypoint.sh` guide](./scripts/cluster-entrypoint.md), including
+its role dispatch, validation stages, dependency waits, supervision, and
+shutdown behavior.
+
 The runtime image contains:
 
 ```dockerfile

@@ -60,6 +60,12 @@ containment.
 
 ## Settings and source of truth
 
+The production script call chains and function-level explanations are indexed
+from [`SCRIPTS.md`](./SCRIPTS.md). In particular, see the detailed guides for
+[`cluster-entrypoint.sh`](./scripts/cluster-entrypoint.md),
+[`render-production-unit.sh`](./scripts/render-production-unit.md), and
+[`validate-production-unit.sh`](./scripts/validate-production-unit.md).
+
 The production configuration is assembled through four layers:
 
 ```text
